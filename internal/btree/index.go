@@ -3,6 +3,7 @@ package btree
 import (
 	"encoding/binary"
 	"fmt"
+	"math"
 	"os"
 )
 
@@ -33,8 +34,10 @@ const (
 // if a key is equal to the key in an internal node, we go to the right child page
 
 // index meta page layout
-// Byte 0 - 3:      rootPageID (4 bytes)
-// Byte 4 - 7:      numPages (4 bytes)
+// Bytes 0 - 3:      rootPageID (4 bytes)
+// Bytes 4 - 7:      numPages (4 bytes)
+// Bytes 8 - 11:     nameLen (4 bytes)
+// Bytes 12 - 12+nameLen: name (tableName_colName)
 
 func NewIndex(tableName, colName string) (*Index, error) {
 
@@ -62,10 +65,10 @@ func NewIndex(tableName, colName string) (*Index, error) {
 		Data: [PAGE_SIZE]byte{},
 	}
 
-	InitMetaPage(page)
+	InitMetaPage(page, tableName+"_"+colName)
 	InitLeafPage(rootPage)
 
-	n, err := file.Write(metaPage[:])
+	n, err := file.Write(page.Data[:])
 
 	if n < PAGE_SIZE || err != nil {
 		return nil, fmt.Errorf("write meta page for column %q: %v", colName, err)
@@ -93,7 +96,6 @@ func OpenIndex(tableName, colName string) (*Index, error) {
 	}
 
 	file, err := os.OpenFile(fmt.Sprintf("%s/%s_%s.idx", dir, tableName, colName), os.O_RDWR, 0644)
-
 	if err != nil {
 		return nil, fmt.Errorf("open index file for column %q: %v", colName, err)
 	}
@@ -110,6 +112,8 @@ func OpenIndex(tableName, colName string) (*Index, error) {
 
 	numPages := binary.LittleEndian.Uint32(metaPage[4:8])
 
+	fi, _ := file.Stat()
+	fmt.Printf("Opened index %s_%s.idx, size=%d, rootPage=%d, numPages=%d\n", tableName, colName, fi.Size(), rootPageID, numPages)
 	return &Index{
 		file:       file,
 		rootPageID: rootPageID,
@@ -141,10 +145,12 @@ func (ind *Index) GetPage(id uint32) (*BTreePage, error) {
 	return page, nil
 }
 
-func InitMetaPage(p *BTreePage) {
+func InitMetaPage(p *BTreePage, name string) {
 	// rootPageId 0 - > 4
 	binary.LittleEndian.PutUint32(p.Data[0:4], 1)
 	binary.LittleEndian.PutUint32(p.Data[4:8], 2)
+	binary.LittleEndian.PutUint32(p.Data[8:12], uint32(len(name)))
+	copy(p.Data[12:], []byte(name))
 }
 
 func (ind *Index) NewLeafPage() (*BTreePage, error) {
@@ -596,4 +602,282 @@ func (ind *Index) GetChildren(b *BTreePage) []*BTreePage {
 	}
 
 	return children
+}
+
+func (ind *Index) Name() (string, error) {
+	metaPage, err := ind.GetPage(metaPageID)
+
+	if err != nil {
+		return "", fmt.Errorf("failed to read meta page: %v", err)
+	}
+
+	nameLen := binary.LittleEndian.Uint32(metaPage.Data[8:12])
+
+	name := string(metaPage.Data[12 : 12+nameLen])
+
+	return name, nil
+}
+
+func (ind *Index) GetNumPages() uint32 {
+	return ind.numPages
+}
+
+func (ind *Index) FindLeftMostLeaf() (*BTreePage, error) {
+	root, err := ind.GetRootPage()
+
+	if err != nil {
+		return nil, err
+	}
+
+	for root.NodeType() != LeafNode {
+
+		if root.GetNumKeys() == 0 {
+			return nil, fmt.Errorf("internal node %d has no keys", root.ID)
+		}
+
+		root, err = ind.GetPage(root.GetChild(0))
+
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return root, nil
+}
+
+// Invariants:
+// Every Leaf is at same level
+// Leaf nodes must have keys in sorted order.
+// Children of internal nodes must have keys in sorted order.
+// max(left subtree) < separator
+// min(right subtree) >= separator
+// parent pointers must be correct
+// pageID should be less than numPages
+// nodes must occupy more than half and less than full capacity (except root)
+// Leaf chain must be a sorted list
+
+var visitedPages []int64
+
+// TODO:
+// make visitedPages thread safe by passing it as paramter, instead of a global variable
+
+// -1 represents unvisited
+// else number represents level
+
+func (ind *Index) Validate() error {
+
+	_, err := ind.GetPage(metaPageID)
+
+	if err != nil {
+		return fmt.Errorf("failed to read meta page: %v", err)
+	}
+
+	rootPage, err := ind.GetRootPage()
+
+	if err != nil {
+		return err
+	}
+
+	numPages := ind.GetNumPages()
+	visitedPages = make([]int64, numPages)
+
+	for i := range visitedPages {
+		visitedPages[i] = -1
+	}
+
+	if rootPage.ID != ind.rootPageID {
+		return fmt.Errorf("root page ID mismatch: expected %d, got %d", ind.rootPageID, rootPage.ID)
+	}
+
+	if rootPage.ID == 0 {
+		return fmt.Errorf("root page ID is 0, index is empty")
+	}
+
+	if rootPage.ParentID() != 0 {
+		return fmt.Errorf("root page has non-zero parent ID: %d", rootPage.ParentID())
+	}
+
+	err = ind.validateNode(rootPage, 0, math.MaxUint64, 0, 0)
+
+	if err != nil {
+		return err
+	}
+
+	leaf, err := ind.FindLeftMostLeaf()
+
+	if err != nil {
+		return err
+	}
+
+	visitedLeaves := make(map[uint32]bool)
+
+	if visitedPages[leaf.ID] == -1 {
+		return fmt.Errorf("leftmost leaf page %d was not visited during validation", leaf.ID)
+	}
+
+	leafLevel := visitedPages[leaf.ID] // used to check if all leaf nodes are on same level
+
+	if err != nil {
+		return fmt.Errorf("failed to find leftmost leaf: %v", err)
+	}
+
+	for leaf != nil {
+		if leaf.NodeType() != LeafNode {
+			return fmt.Errorf("expected leaf node, got %v", leaf.NodeType())
+		}
+
+		if visitedPages[leaf.ID] == -1 {
+			return fmt.Errorf("leaf page %d was not visited during validation", leaf.ID)
+		}
+
+		if visitedPages[leaf.ID] != leafLevel {
+			return fmt.Errorf("leaf page %d is at level %d, expected level %d", leaf.ID, visitedPages[leaf.ID], leafLevel)
+		}
+
+		if visitedLeaves[leaf.ID] {
+			return fmt.Errorf("leaf page %d is visited more than once in the leaf chain", leaf.ID)
+		}
+
+		visitedLeaves[leaf.ID] = true
+
+		nextLeafID := leaf.NextLeaf()
+
+		if nextLeafID == 0 {
+			break
+		}
+		nextLeaf, err := ind.GetPage(nextLeafID)
+
+		if err != nil {
+			return err
+		}
+
+		if nextLeaf.NodeType() != LeafNode {
+			return fmt.Errorf("expected leaf node, got %v", leaf.NodeType())
+		}
+
+		if leaf.GetNumKeys() > 0 && nextLeaf.GetNumKeys() > 0 {
+			if leaf.GetKey(leaf.GetNumKeys()-1) > nextLeaf.GetKey(0) {
+				return fmt.Errorf("leaf chain not sorted …")
+			}
+		}
+
+		leaf = nextLeaf
+
+	}
+
+	for i := 1; i < len(visitedPages); i++ {
+		if visitedPages[i] == -1 {
+			return fmt.Errorf("page %d was not visited during validation", i)
+		}
+	}
+
+	return nil
+
+}
+
+func (ind *Index) validateNode(node *BTreePage, minKey, maxKey uint64, level int, parentPageID uint32) error {
+
+	if node == nil {
+		return fmt.Errorf("node is nil")
+	}
+
+	if node.ID >= ind.numPages {
+		return fmt.Errorf("node ID %d is out of bounds (numPages=%d)", node.ID, ind.numPages)
+	}
+
+	if node.ParentID() != parentPageID {
+		return fmt.Errorf("node %d has incorrect parent ID: expected %d, got %d", node.ID, parentPageID, node.ParentID())
+	}
+
+	if visitedPages[node.ID] != -1 {
+		return fmt.Errorf("node %d has already been visited at level %d, current level %d", node.ID, visitedPages[node.ID], level)
+	}
+
+	visitedPages[node.ID] = int64(level)
+
+	numKeys := node.GetNumKeys()
+
+	if numKeys == 0 && node.ID != ind.rootPageID {
+		return fmt.Errorf("node %d has no keys", node.ID)
+	}
+
+	if node.NodeType() == LeafNode {
+		if numKeys < MinKeysPerLeaf && node.ID != ind.rootPageID {
+			return fmt.Errorf("leaf node %d has too few keys: %d", node.ID, numKeys)
+		}
+
+		if numKeys > MaxKeysPerLeaf {
+			return fmt.Errorf("leaf node %d has too many keys: %d", node.ID, numKeys)
+		}
+
+		for i := 0; i < int(numKeys); i++ {
+			key := node.GetKey(i)
+			if key < minKey || key >= maxKey {
+				return fmt.Errorf("key %d in leaf node %d is out of bounds [%d, %d]", key, node.ID, minKey, maxKey)
+			}
+
+			if i > 0 {
+				prevKey := node.GetKey(i - 1)
+				if key <= prevKey {
+					return fmt.Errorf("keys in leaf node %d are not sorted: %d <= %d", node.ID, key, prevKey)
+				}
+			}
+		}
+	} else if node.NodeType() == InternalNode {
+		if numKeys < MinKeysPerInternal && node.ID != ind.rootPageID {
+			return fmt.Errorf("internal node %d has too few keys: %d", node.ID, numKeys)
+		}
+
+		if numKeys > MaxKeysPerInternal {
+			return fmt.Errorf("internal node %d has too many keys: %d", node.ID, numKeys)
+		}
+
+		leftMostChild := node.GetChild(0)
+		leftMostPage, err := ind.GetPage(leftMostChild)
+
+		if err != nil {
+			return fmt.Errorf("failed to get leftmost child page %d of internal node %d: %v", leftMostChild, node.ID, err)
+		}
+
+		if node.GetKey(0) < minKey {
+			return fmt.Errorf("key %d in internal node %d is out of bounds [%d, %d]", node.GetKey(0), node.ID, minKey, maxKey)
+		}
+
+		err = ind.validateNode(leftMostPage, minKey, node.GetKey(0), level+1, node.ID)
+
+		if err != nil {
+			return err
+		}
+
+		for i := 0; i < int(numKeys); i++ {
+			child := node.GetChild(uint32(i + 1))
+			childPage, err := ind.GetPage(child)
+
+			if err != nil {
+				return fmt.Errorf("failed to get child page %d of internal node %d: %v", child, node.ID, err)
+			}
+
+			if i < int(numKeys)-1 {
+				if node.GetKey(i) >= node.GetKey(i+1) {
+					return fmt.Errorf("keys in internal node %d are not sorted: %d >= %d", node.ID, node.GetKey(i), node.GetKey(i+1))
+				}
+
+				err = ind.validateNode(childPage, node.GetKey(i), node.GetKey(i+1), level+1, node.ID)
+			} else {
+				if node.GetKey(i) > maxKey {
+					return fmt.Errorf("key %d in internal node %d is out of bounds [%d, %d]", node.GetKey(i), node.ID, minKey, maxKey)
+				}
+				err = ind.validateNode(childPage, node.GetKey(i), maxKey, level+1, node.ID)
+			}
+
+			if err != nil {
+				return err
+			}
+
+		}
+
+	}
+
+	return nil
+
 }

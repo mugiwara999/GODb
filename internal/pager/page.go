@@ -230,3 +230,12 @@ func (p *Page) FreeSpace() (int, error) {
 	}
 	return freeEnd - freeStart, nil
 }
+
+func (p *Page) GetNumSlots() (int, error) {
+	numSlots, _, _, err := p.headerValues()
+	if err != nil {
+		return 0, err
+	}
+	return numSlots, nil
+
+}

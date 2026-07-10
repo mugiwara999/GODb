@@ -43,7 +43,7 @@ func TestTableThousandsOfInsertsAndTombstones(t *testing.T) {
 	// These bugs are common because row iterators must skip deleted slots while page growth continues.
 	setupTableTest(t)
 
-	tbl, err := table.Create("users", []string{"id", "name"})
+	tbl, err := table.Create("users", []string{"name", "roll"})
 	if err != nil {
 		t.Fatalf("Create failed: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestTableThousandsOfInsertsAndTombstones(t *testing.T) {
 		}
 	}
 	for i := 0; i < total; i++ {
-		if res[i+1][0] != wantRows[i][0] || res[i+1][1] != wantRows[i][1] {
+		if res[i+1][1] != wantRows[i][0] || res[i+1][2] != wantRows[i][1] {
 			t.Fatalf("row %d mismatch: got %q want %q", i, res[i+1], wantRows[i])
 		}
 	}
@@ -109,7 +109,7 @@ func TestTableThousandsOfInsertsAndTombstones(t *testing.T) {
 		if _, ok := deleted[i]; ok {
 			continue
 		}
-		if res[pos][0] != wantRows[i][0] || res[pos][1] != wantRows[i][1] {
+		if res[pos][1] != wantRows[i][0] || res[pos][2] != wantRows[i][1] {
 			t.Fatalf("row %d mismatch after delete: got %q want %q", i, res[pos], wantRows[i])
 		}
 		pos++

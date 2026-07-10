@@ -13,6 +13,23 @@ type Pager struct {
 }
 
 // page 0 for meta data
+// meta data
+// Bytes 0-3   : GODB
+// Bytes 4-5   : version
+// Bytes 6-13	 : lastID
+// Bytes 14-17: numCols
+// Bytes 18+ : column names (null-terminated strings)
+
+const (
+	GODB           = 0x474f4442
+	LastIDOffset   = 6
+	LastIDSize     = 8
+	NumColsOffset  = 14
+	NumColsSize    = 4
+	ColNamesOffset = 18
+)
+
+var ErrInvalidPager = fmt.Errorf("invalid pager")
 
 func NewPager(path string) (*Pager, error) {
 	return CreatePager(path)
@@ -93,12 +110,6 @@ func (p *Pager) Flush(page *Page) error {
 
 }
 
-// meta data
-// Bytes 0-3   : GODB
-// Bytes 4-5   : version
-// Bytes 6-9  : numCols
-// Bytes 10+ : column names (null-terminated strings)
-
 func (p *Pager) GetColumns() ([]string, error) {
 	if p.numPages == 0 {
 		return nil, fmt.Errorf("read table metadata from %q: %w (metadata page is missing)", p.path, ErrMetadataCorrupt)
@@ -109,19 +120,23 @@ func (p *Pager) GetColumns() ([]string, error) {
 		return nil, fmt.Errorf("read table metadata from %q: %w", p.path, err)
 	}
 
-	if binary.LittleEndian.Uint32(page.Data[:4]) != 0x474f4442 {
-		return nil, fmt.Errorf("read table metadata from %q: %w (invalid magic)", p.path, ErrMetadataCorrupt)
+	err = isValidPager(p)
+
+	if err != nil {
+		return nil, fmt.Errorf("read table metadata from %q: %w", p.path, err)
 	}
-	if binary.LittleEndian.Uint16(page.Data[4:6]) != 1 {
-		return nil, fmt.Errorf("read table metadata from %q: %w (unsupported version %d)", p.path, ErrMetadataCorrupt, binary.LittleEndian.Uint16(page.Data[4:6]))
+
+	numCols, err := p.GetNumCols()
+
+	if err != nil {
+		return nil, fmt.Errorf("read table metadata from %q: %w", p.path, err)
 	}
-	numCols := int(binary.LittleEndian.Uint32(page.Data[6:10]))
 
 	cols := make([]string, numCols)
 
 	accumulator := make([]byte, 0)
 
-	offset := 10
+	offset := ColNamesOffset
 
 	colIdx := 0
 
@@ -152,11 +167,12 @@ func (p *Pager) WriteColumns(cols []string) error {
 		return fmt.Errorf("write table metadata to %q: %w", p.path, err)
 	}
 
-	binary.LittleEndian.PutUint32(page.Data[:4], uint32(0x474f4442)) // "GODB"
-	binary.LittleEndian.PutUint16(page.Data[4:6], uint16(1))         // version
-	binary.LittleEndian.PutUint32(page.Data[6:10], uint32(len(cols)))
+	binary.LittleEndian.PutUint32(page.Data[:4], uint32(GODB)) // "GODB"
+	binary.LittleEndian.PutUint16(page.Data[4:6], uint16(1))
+	binary.LittleEndian.PutUint64(page.Data[LastIDOffset:LastIDOffset+LastIDSize], uint64(0))
+	binary.LittleEndian.PutUint32(page.Data[NumColsOffset:NumColsOffset+NumColsSize], uint32(len(cols)))
 
-	offset := 10
+	offset := ColNamesOffset
 	required := offset
 
 	for _, col := range cols {
@@ -188,6 +204,102 @@ func (p *Pager) Close() error {
 
 func (p *Pager) GetNumPages() int {
 	return p.numPages
+}
+
+func (p *Pager) LastID() (uint64, error) {
+	if p.numPages == 0 {
+		return 0, fmt.Errorf("read last ID from %q: %w (metadata page is missing)", p.path, ErrMetadataCorrupt)
+	}
+	page, err := p.GetPage(0)
+
+	if err != nil || page == nil {
+		return 0, fmt.Errorf("read last ID from %q: %w", p.path, err)
+	}
+
+	if binary.LittleEndian.Uint32(page.Data[:4]) != GODB {
+		return 0, fmt.Errorf("read last ID from %q: %w (invalid magic)", p.path, ErrMetadataCorrupt)
+	}
+	if binary.LittleEndian.Uint16(page.Data[4:6]) != 1 {
+		return 0, fmt.Errorf("read last ID from %q: %w (unsupported version %d)", p.path, ErrMetadataCorrupt, binary.LittleEndian.Uint16(page.Data[4:6]))
+	}
+
+	lastID := binary.LittleEndian.Uint64(page.Data[LastIDOffset : LastIDOffset+LastIDSize])
+
+	return lastID, nil
+
+}
+
+func (p *Pager) SetLastID(lastID uint64) error {
+	if p.numPages == 0 {
+		return fmt.Errorf("write last ID to %q: %w (metadata page is missing)", p.path, ErrMetadataCorrupt)
+	}
+
+	err := isValidPager(p)
+
+	if err != nil {
+		return err
+	}
+
+	page, _ := p.GetPage(0)
+
+	binary.LittleEndian.PutUint64(page.Data[LastIDOffset:LastIDOffset+LastIDSize], lastID)
+
+	if err := p.Flush(page); err != nil {
+		return fmt.Errorf("write last ID to %q: %w", p.path, err)
+	}
+
+	return nil
+
+}
+
+func (p *Pager) GetNumCols() (int, error) {
+	if p.numPages == 0 {
+		return 0, fmt.Errorf("read number of columns from %q: %w (metadata page is missing)", p.path, ErrMetadataCorrupt)
+	}
+
+	err := isValidPager(p)
+
+	if err != nil {
+		return 0, fmt.Errorf("read number of columns from %q: %w", p.path, err)
+	}
+
+	page, _ := p.GetPage(0)
+
+	numCols := int(binary.LittleEndian.Uint32(page.Data[NumColsOffset : NumColsOffset+NumColsSize]))
+
+	return numCols, nil
+
+}
+
+func isValidPager(p *Pager) error {
+	if p == nil {
+		return fmt.Errorf("pager is nil: %w", ErrInvalidPager)
+	}
+	if p.file == nil {
+		return fmt.Errorf("pager file is nil: %w", ErrInvalidPager)
+	}
+	if p.path == "" {
+		return fmt.Errorf("pager path is empty: %w", ErrInvalidPager)
+	}
+	if p.numPages < 0 {
+		return fmt.Errorf("pager numPages is negative: %w", ErrInvalidPager)
+	}
+
+	metaPage, err := p.GetPage(0)
+	if err != nil {
+		return fmt.Errorf("pager metadata page is invalid: %w", ErrInvalidPager)
+	}
+	if metaPage == nil {
+		return fmt.Errorf("pager metadata page is nil: %w", ErrInvalidPager)
+	}
+	if binary.LittleEndian.Uint32(metaPage.Data[:4]) != GODB {
+		return fmt.Errorf("pager metadata page has invalid magic: %w, %s", ErrInvalidPager, string(metaPage.Data[:4]))
+	}
+	if binary.LittleEndian.Uint16(metaPage.Data[4:6]) != 1 {
+		return fmt.Errorf("pager metadata page has unsupported version: %w", ErrInvalidPager)
+	}
+
+	return nil
 }
 
 type rowIterator struct {

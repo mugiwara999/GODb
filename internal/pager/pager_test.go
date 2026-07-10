@@ -584,7 +584,7 @@ func TestMetadataCorruptionDetection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreatePager failed: %v", err)
 	}
-	if err := pg.WriteColumns([]string{"id", "name"}); err != nil {
+	if err := pg.WriteColumns([]string{"name", "roll"}); err != nil {
 		t.Fatalf("WriteColumns failed: %v", err)
 	}
 	if err := pg.Close(); err != nil {
@@ -623,7 +623,7 @@ func TestMetadataCorruptionDetection(t *testing.T) {
 	}
 	defer opened.Close()
 
-	if _, err := opened.GetColumns(); !errors.Is(err, pager.ErrMetadataCorrupt) {
+	if _, err := opened.GetColumns(); !errors.Is(err, pager.ErrMetadataCorrupt) && !errors.Is(err, pager.ErrInvalidPager) {
 		t.Fatalf("GetColumns error = %v, want ErrMetadataCorrupt", err)
 	}
 }

@@ -9,14 +9,14 @@ import (
 func withIndex(t *testing.T, colName string, fn func(*Index)) {
 	t.Helper()
 	// path := filepath.Join(colName)
-	idx := NewIndex(colName)
+	idx, _ := NewIndex("test", colName)
 	defer idx.Close()
 	fn(idx)
 }
 
 func TestInsertAndFindSequential(t *testing.T) {
 	withIndex(t, "test_seq", func(idx *Index) {
-		const N = 1000
+		const N = 100000
 		// Insert keys 0 .. N-1 with RID = {pageID=key, slotID=key%100}
 		for i := 0; i < N; i++ {
 			err := idx.Insert(uint64(i), uint32(i), uint16(i%100))
@@ -27,6 +27,12 @@ func TestInsertAndFindSequential(t *testing.T) {
 
 		// Look up every key
 		for i := 0; i < N; i++ {
+			if i%10000 == 0 {
+				err := idx.Validate()
+				if err != nil {
+					t.Fatalf("Invalid Tree")
+				}
+			}
 			rid, err := idx.Find(uint64(i))
 			if err != nil {
 				t.Fatalf("Find key %d: %v", i, err)
@@ -44,10 +50,16 @@ func TestInsertRandom(t *testing.T) {
 	withIndex(t, "test_rand", func(idx *Index) {
 		rng := rand.New(rand.NewSource(42))
 		expected := make(map[uint64]RID)
-		const N = 1000
+		const N = 100000
 
 		// Insert
 		for i := 0; i < N; i++ {
+			if i%10000 == 0 {
+				err := idx.Validate()
+				if err != nil {
+					t.Fatalf("Invalid Tree")
+				}
+			}
 			key := rng.Uint64() >> 1 // avoid sign issues
 			rid := RID{uint32(key % 1000), uint16(i % 100)}
 			err := idx.Insert(key, rid.pageID, rid.slotID)

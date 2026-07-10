@@ -7,14 +7,17 @@ import (
 	"strings"
 
 	"github.com/joho/godotenv"
+	"github.com/mugiwara999/goDB/internal/btree"
 	"github.com/mugiwara999/goDB/internal/pager"
 )
 
 type Table struct {
-	Pager *pager.Pager
-	Name  string
-	Path  string
-	cols  []string
+	Pager   *pager.Pager
+	Name    string
+	Path    string
+	cols    []string
+	Indexes map[string]*btree.Index
+	lastID  uint64
 }
 
 var (
@@ -38,11 +41,30 @@ func Open(name string) (*Table, error) {
 		return nil, fmt.Errorf("open table %q at %q: %w", name, path, err)
 	}
 
+	idxs := make(map[string]*btree.Index)
+
+	for _, col := range cols {
+		idx, err := btree.OpenIndex(name, col)
+		if err != nil {
+			continue
+		}
+		idxs[col] = idx
+	}
+
+	lastID, err := pg.LastID()
+
+	if err != nil {
+		_ = pg.Close()
+		return nil, fmt.Errorf("open table %q at %q: %w", name, path, err)
+	}
+
 	return &Table{
-		Pager: pg,
-		Name:  strings.ToLower(name),
-		Path:  path,
-		cols:  cols,
+		Pager:   pg,
+		Name:    strings.ToLower(name),
+		Path:    path,
+		cols:    cols,
+		Indexes: idxs,
+		lastID:  lastID,
 	}, nil
 }
 
@@ -61,16 +83,37 @@ func Create(name string, cols []string) (*Table, error) {
 		return nil, fmt.Errorf("create table %q at %q: %w", name, path, err)
 	}
 
+	cols = append([]string{"id"}, cols...)
+
 	if err := pg.WriteColumns(cols); err != nil {
 		_ = pg.Close()
 		return nil, fmt.Errorf("create table %q at %q: %w", name, path, err)
 	}
 
+	idx, err := btree.NewIndex(name, "id")
+
+	if err != nil {
+		_ = pg.Close()
+		return nil, fmt.Errorf("create table %q at %q: %w", name, path, err)
+	}
+
+	idxs := make(map[string]*btree.Index)
+	idxs["id"] = idx
+
+	lastID, err := pg.LastID()
+
+	if err != nil {
+		_ = pg.Close()
+		return nil, fmt.Errorf("create table %q at %q: %w", name, path, err)
+	}
+
 	return &Table{
-		Pager: pg,
-		Name:  strings.ToLower(name),
-		Path:  path,
-		cols:  cols,
+		Pager:   pg,
+		Name:    strings.ToLower(name),
+		Path:    path,
+		cols:    cols,
+		Indexes: idxs,
+		lastID:  lastID,
 	}, nil
 }
 
@@ -78,7 +121,24 @@ func (t *Table) Close() error {
 	if t == nil || t.Pager == nil {
 		return nil
 	}
-	return t.Pager.Close()
+	err := t.Pager.Close()
+
+	if err != nil {
+		return fmt.Errorf("close table %q: %w", t.Name, err)
+	}
+
+	for _, idx := range t.Indexes {
+		if err := idx.Close(); err != nil {
+			name, err := idx.Name()
+			if err != nil {
+				return fmt.Errorf("close index: %w", err)
+			}
+			return fmt.Errorf("close index %q: %w", name, err)
+		}
+	}
+
+	return nil
+
 }
 
 func (t *Table) GetColumns() []string {

@@ -39,6 +39,13 @@ type RID struct {
 }
 
 const PAGE_SIZE = 4096
+
+const (
+	MaxKeysPerLeaf     = (PAGE_SIZE - LeafHeaderSize) / LeafEntrySize
+	MaxKeysPerInternal = (PAGE_SIZE - InternalHeaderSize) / InternalEntrySize
+	MinKeysPerLeaf     = MaxKeysPerLeaf / 2
+	MinKeysPerInternal = MaxKeysPerInternal / 2
+)
 const (
 	LeafHeaderSize   = 11
 	LeafEntrySize    = 14
@@ -64,12 +71,14 @@ const (
 
 func InitLeafPage(p *BTreePage) {
 	p.Data[0] = 1
-	binary.LittleEndian.PutUint16(p.Data[1:3], 0)
-	binary.LittleEndian.PutUint32(p.Data[3:7], 0)
+	binary.LittleEndian.PutUint16(p.Data[1:3], 0) // numKeys
+	binary.LittleEndian.PutUint32(p.Data[3:7], 0) // parent page ID
 }
 
 func InitInternalPage(p *BTreePage) {
 	p.Data[0] = 0
+	binary.LittleEndian.PutUint16(p.Data[1:3], 0) // numKeys
+	binary.LittleEndian.PutUint32(p.Data[3:7], 0) // parent page ID
 }
 
 func (b *BTreePage) NodeType() NodeType {
@@ -297,4 +306,12 @@ func (b *BTreePage) PrintPage() {
 	}
 
 	print("|")
+}
+
+func (id *RID) GetPageID() uint32 {
+	return id.pageID
+}
+
+func (id *RID) GetSlotID() uint16 {
+	return id.slotID
 }
