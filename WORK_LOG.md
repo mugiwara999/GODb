@@ -44,12 +44,20 @@
 - Regression coverage: validation passes on a populated table and after row relocation/reopen; corrupted RIDs and stale entries after DELETE are rejected.
 - Verification: `GOCACHE=/tmp/goDB-gocache go test ./internal/table` passed; full `GOCACHE=/tmp/goDB-gocache go test ./...` passed; `GOCACHE=/tmp/goDB-gocache go build ./...` passed; `GOCACHE=/tmp/goDB-gocache go vet ./...` passed; `git diff --check` passed.
 - Limitation: this adds diagnosis, not physical B+ tree deletion. A table with deleted rows is expected to fail this strict consistency check until index deletion is implemented.
+- Commit: `e5794b1` (`Validate table primary index consistency`).
+
+### Reject duplicate B+ tree keys before mutation
+
+- Priority: correctness. The index stores one RID per key and `Find` returns one RID, so accepting duplicates makes rows unreachable through the index and violates primary-key behavior.
+- Changes: `Index.Insert` now returns `ErrDuplicateKey` when the destination leaf already contains the key, before it shifts entries or splits a page.
+- Regression coverage: insert 1,000 keys across leaf splits, reject a duplicate, verify the original RID and page count are unchanged, and validate the tree.
+- Verification: `GOCACHE=/tmp/goDB-gocache go test ./internal/btree` passed; full `GOCACHE=/tmp/goDB-gocache go test ./...` passed; `GOCACHE=/tmp/goDB-gocache go build ./...` passed; `GOCACHE=/tmp/goDB-gocache go vet ./...` passed; `git diff --check` passed.
 
 ## Prioritized backlog
 
 1. **Remove deleted rows from the primary B+ tree.** The new validator detects tombstoned RIDs, but DELETE still leaves them in the index. This depends on a safe B+ tree key deletion/rebalancing design. Acceptance: after delete, indexed lookup remains empty, the table/index validator passes, and delete/reopen cases cover leaf and internal-node boundaries.
 2. **Add crash-safe table mutations.** Insert/update/delete write table pages, metadata, and indexes separately, so a process or I/O failure between writes can leave inconsistent state. Depends on a WAL or another recovery design. Acceptance: injected failures at each write boundary recover to a consistent table/index state across reopen.
-3. **Validate and harden B+ tree file metadata and duplicate-key semantics.** Index open still trusts some root/page counts, and this branch does not specify duplicate handling. Acceptance: malformed/truncated metadata returns errors without panics; duplicate key behavior is explicit and tested.
+3. **Validate and harden B+ tree file metadata.** Index open still trusts some root/page counts. Acceptance: malformed/truncated metadata returns errors without panics and reopen tests cover supported empty and populated indexes.
 4. **Add SQL/parser integration tests and usability documentation.** Parser/lexer lack test files, despite supporting CREATE/INSERT/SELECT/DELETE/UPDATE. Acceptance: representative valid and malformed statements are covered, including EOF and separator edge cases.
 5. **Measure storage and index performance.** Existing insertion tests exercise large inputs but provide no benchmark baseline. Acceptance: add reproducible benchmarks for table insert/select and B+ tree insert/find before proposing optimization.
 

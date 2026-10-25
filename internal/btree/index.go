@@ -19,6 +19,7 @@ const (
 )
 
 var ErrKeyNotFound = errors.New("key not found")
+var ErrDuplicateKey = errors.New("duplicate key")
 
 // leaf node layout
 // Byte 0:      nodeType (1 = leaf)
@@ -206,6 +207,9 @@ func (ind *Index) InsertIntoLeafPage(p *BTreePage, key uint64, id RID) (uint64, 
 	insertPos := 0
 	for insertPos < numKeys {
 		existingKey := p.GetKey(insertPos)
+		if key == existingKey {
+			return 0, nil, fmt.Errorf("insert key %d: %w", key, ErrDuplicateKey)
+		}
 		if key < existingKey {
 			break
 		}

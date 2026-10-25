@@ -88,6 +88,35 @@ func TestInsertRandom(t *testing.T) {
 	})
 }
 
+func TestInsertRejectsDuplicateKeyWithoutChangingTree(t *testing.T) {
+	withIndex(t, "test_duplicate", func(idx *Index) {
+		const n = 1000
+		for i := 0; i < n; i++ {
+			if err := idx.Insert(uint64(i), uint32(i), uint16(i%100)); err != nil {
+				t.Fatalf("Insert key %d: %v", i, err)
+			}
+		}
+
+		beforePages := idx.GetNumPages()
+		if err := idx.Insert(500, 9999, 99); !errors.Is(err, ErrDuplicateKey) {
+			t.Fatalf("duplicate Insert error = %v, want ErrDuplicateKey", err)
+		}
+		if got := idx.GetNumPages(); got != beforePages {
+			t.Fatalf("page count after duplicate insert = %d, want %d", got, beforePages)
+		}
+		got, err := idx.Find(500)
+		if err != nil {
+			t.Fatalf("Find key 500: %v", err)
+		}
+		if got.GetPageID() != 500 || got.GetSlotID() != 0 {
+			t.Fatalf("RID after duplicate insert = (%d,%d), want (500,0)", got.GetPageID(), got.GetSlotID())
+		}
+		if err := idx.Validate(); err != nil {
+			t.Fatalf("Validate after duplicate insert: %v", err)
+		}
+	})
+}
+
 func TestInvariantsAfterInsert(t *testing.T) {
 	withIndex(t, "test_inv", func(idx *Index) {
 		// Insert enough keys to guarantee at least 2 levels
