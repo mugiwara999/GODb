@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/mugiwara999/goDB/internal/btree"
@@ -227,5 +228,86 @@ func TestOversizedInsertDoesNotConsumeIDOrAllocatePage(t *testing.T) {
 	}
 	if got := tbl.Pager.GetNumPages(); got != initialPages {
 		t.Fatalf("page count after oversized insert = %d, want %d", got, initialPages)
+	}
+}
+
+func TestVariableLengthUpdatePreservesIDsAndIndex(t *testing.T) {
+	setupTableTest(t)
+
+	tbl, err := table.Create("updates", []string{"name"})
+	if err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+	t.Cleanup(func() { _ = tbl.Close() })
+
+	const rowCount = 20
+	for i := 0; i < rowCount; i++ {
+		if err := tbl.Insert([]string{"old"}); err != nil {
+			t.Fatalf("Insert(%d): %v", i, err)
+		}
+	}
+
+	longValue := strings.Repeat("long", 120)
+	if err := tbl.Update(nil, []table.UpdateValue{{ColIdx: 1, Value: longValue}}); err != nil {
+		t.Fatalf("grow rows: %v", err)
+	}
+	rows, err := tbl.Select([]string{"*"}, nil)
+	if err != nil {
+		t.Fatalf("Select after grow: %v", err)
+	}
+	if len(rows) != rowCount+1 {
+		t.Fatalf("row count after grow = %d, want %d", len(rows)-1, rowCount)
+	}
+	for _, id := range []string{"0", "10", "19"} {
+		got, err := tbl.Select([]string{"*"}, []table.ColEq{{ColIdx: 0, Value: id}})
+		if err != nil || len(got) != 2 || got[1][0] != id || got[1][1] != longValue {
+			t.Fatalf("Select ID %s after grow = %v, err=%v", id, got, err)
+		}
+	}
+
+	if err := tbl.Update([]table.ColEq{{ColIdx: 1, Value: longValue}}, []table.UpdateValue{{ColIdx: 1, Value: "x"}}); err != nil {
+		t.Fatalf("shrink rows: %v", err)
+	}
+	rows, err = tbl.Select([]string{"*"}, nil)
+	if err != nil || len(rows) != rowCount+1 {
+		t.Fatalf("Select after shrink returned %d rows, err=%v", len(rows), err)
+	}
+	for _, id := range []string{"0", "10", "19"} {
+		got, err := tbl.Select([]string{"*"}, []table.ColEq{{ColIdx: 0, Value: id}})
+		if err != nil || len(got) != 2 || got[1][0] != id || got[1][1] != "x" {
+			t.Fatalf("Select ID %s after shrink = %v, err=%v", id, got, err)
+		}
+	}
+
+	if err := tbl.Close(); err != nil {
+		t.Fatalf("Close before reopen: %v", err)
+	}
+	tbl, err = table.Open("updates")
+	if err != nil {
+		t.Fatalf("Open after updates: %v", err)
+	}
+	got, err := tbl.Select([]string{"*"}, []table.ColEq{{ColIdx: 0, Value: "19"}})
+	if err != nil || len(got) != 2 || got[1][1] != "x" {
+		t.Fatalf("Select ID 19 after reopen = %v, err=%v", got, err)
+	}
+}
+
+func TestOversizedUpdateLeavesExistingRowsLive(t *testing.T) {
+	setupTableTest(t)
+
+	tbl, err := table.Create("oversized_update", []string{"name"})
+	if err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+	t.Cleanup(func() { _ = tbl.Close() })
+	if err := tbl.Insert([]string{"original"}); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := tbl.Update(nil, []table.UpdateValue{{ColIdx: 1, Value: strings.Repeat("x", 4096)}}); err == nil {
+		t.Fatal("oversized update succeeded")
+	}
+	rows, err := tbl.Select([]string{"*"}, nil)
+	if err != nil || len(rows) != 2 || rows[1][1] != "original" {
+		t.Fatalf("row after failed oversized update = %v, err=%v", rows, err)
 	}
 }

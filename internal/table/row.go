@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/mugiwara999/goDB/internal/btree"
 	"github.com/mugiwara999/goDB/internal/pager"
 )
 
@@ -325,6 +326,27 @@ func (t *Table) Delete(filters []ColEq) error {
 //	Worth understanding and fixing.
 
 func (t *Table) Update(filters []ColEq, toUpdate []UpdateValue) error {
+	for _, filter := range filters {
+		if filter.ColIdx < 0 || filter.ColIdx >= len(t.cols) {
+			return fmt.Errorf("update table %q: filter column index %d is out of range", t.Name, filter.ColIdx)
+		}
+	}
+	for _, update := range toUpdate {
+		if update.ColIdx <= 0 || update.ColIdx >= len(t.cols) {
+			return fmt.Errorf("update table %q: update column index %d is invalid", t.Name, update.ColIdx)
+		}
+		if strings.ContainsRune(update.Value, 0) {
+			return fmt.Errorf("update table %q: values cannot contain NUL", t.Name)
+		}
+	}
+
+	type change struct {
+		info   pager.RowItInfo
+		data   []byte
+		id     uint64
+		oldRID *btree.RID
+	}
+	var changes []change
 	rowIt := t.Pager.RowIterator()
 
 	for {
@@ -337,7 +359,7 @@ func (t *Table) Update(filters []ColEq, toUpdate []UpdateValue) error {
 		}
 
 		row := DeserializeRow(rowData)
-		if len(row) < len(t.cols) {
+		if len(row) != len(t.cols) {
 			return fmt.Errorf("update table %q: corrupt row has %d values, expected %d", t.Name, len(row), len(t.cols))
 		}
 
@@ -356,44 +378,109 @@ func (t *Table) Update(filters []ColEq, toUpdate []UpdateValue) error {
 			continue
 		}
 
+		updated := append([]string(nil), row...)
 		for _, v := range toUpdate {
-			if v.ColIdx < 0 || v.ColIdx >= len(row) {
-				return fmt.Errorf("update table %q: update column index %d is out of range for row with %d values", t.Name, v.ColIdx, len(row))
-			}
-
-			if v.ColIdx == 0 {
-				return fmt.Errorf("update table %q: cannot update primary key column 'id'", t.Name)
-			}
-			row[v.ColIdx] = v.Value
+			updated[v.ColIdx] = v.Value
 		}
 
-		info := rowIt.GetCurrentInfo()
-		newData := SerializeRow(row)
-
-		page, err := t.Pager.GetPage(info.PageID)
+		data := SerializeRow(updated)
+		if len(data) > pager.PAGE_SIZE-11 {
+			return fmt.Errorf("update table %q: %w", t.Name, pager.ErrPageFull)
+		}
+		id, err := strconv.ParseUint(row[0], 10, 64)
 		if err != nil {
-			return fmt.Errorf("update table %q page %d slot %d: %w", t.Name, info.PageID, info.SlotID, err)
+			return fmt.Errorf("update table %q: corrupt row ID %q: %w", t.Name, row[0], err)
+		}
+		changes = append(changes, change{info: rowIt.GetCurrentInfo(), data: data, id: id})
+	}
+
+	// Simulate replacements first so a later row that cannot be relocated does
+	// not leave earlier matching rows partially updated.
+	simulatedPages := make(map[int]*pager.Page)
+	for i := range changes {
+		c := &changes[i]
+		page := simulatedPages[c.info.PageID]
+		if page == nil {
+			loaded, err := t.Pager.GetPage(c.info.PageID)
+			if err != nil {
+				return fmt.Errorf("update table %q page %d: %w", t.Name, c.info.PageID, err)
+			}
+			page = loaded
+			simulatedPages[c.info.PageID] = page
+		}
+		if err := page.ReplaceRow(c.info.SlotID, c.data); err == nil {
+			continue
+		} else if !errors.Is(err, pager.ErrPageFull) {
+			return fmt.Errorf("update table %q page %d slot %d: %w", t.Name, c.info.PageID, c.info.SlotID, err)
 		}
 
-		if len(newData) == len(rowData) {
-			if err := page.Overwrite(info.SlotID, newData); err != nil {
-				return fmt.Errorf("update table %q page %d slot %d: %w", t.Name, info.PageID, info.SlotID, err)
-			}
+		index := t.Indexes["id"]
+		if index == nil {
+			return fmt.Errorf("update table %q: missing primary key index", t.Name)
+		}
+		rid, err := index.Find(c.id)
+		if err != nil {
+			return fmt.Errorf("update table %q: find ID %d for relocation: %w", t.Name, c.id, err)
+		}
+		if int(rid.GetPageID()) != c.info.PageID || int(rid.GetSlotID()) != c.info.SlotID {
+			return fmt.Errorf("update table %q: primary index location mismatch for ID %d", t.Name, c.id)
+		}
+		c.oldRID = rid
+		if err := page.DeleteRow(c.info.SlotID); err != nil {
+			return fmt.Errorf("update table %q page %d slot %d: %w", t.Name, c.info.PageID, c.info.SlotID, err)
+		}
+	}
+
+	for _, c := range changes {
+		page, err := t.Pager.GetPage(c.info.PageID)
+		if err != nil {
+			return fmt.Errorf("update table %q page %d: %w", t.Name, c.info.PageID, err)
+		}
+		if err := page.ReplaceRow(c.info.SlotID, c.data); err == nil {
 			if err := t.Pager.Flush(page); err != nil {
-				return fmt.Errorf("update table %q page %d slot %d: %w", t.Name, info.PageID, info.SlotID, err)
+				return fmt.Errorf("update table %q page %d: %w", t.Name, c.info.PageID, err)
 			}
 			continue
+		} else if !errors.Is(err, pager.ErrPageFull) {
+			return fmt.Errorf("update table %q page %d slot %d: %w", t.Name, c.info.PageID, c.info.SlotID, err)
 		}
 
-		if err := page.DeleteRow(info.SlotID); err != nil {
-			return fmt.Errorf("update table %q page %d slot %d: %w", t.Name, info.PageID, info.SlotID, err)
+		index := t.Indexes["id"]
+		if index == nil {
+			return fmt.Errorf("update table %q: missing primary key index", t.Name)
+		}
+		if c.oldRID == nil {
+			rid, err := index.Find(c.id)
+			if err != nil {
+				return fmt.Errorf("update table %q: find ID %d for relocation: %w", t.Name, c.id, err)
+			}
+			if int(rid.GetPageID()) != c.info.PageID || int(rid.GetSlotID()) != c.info.SlotID {
+				return fmt.Errorf("update table %q: primary index location mismatch for ID %d", t.Name, c.id)
+			}
+		}
+
+		destination, err := t.Pager.NewPage()
+		if err != nil {
+			return fmt.Errorf("update table %q: allocate relocation page: %w", t.Name, err)
+		}
+		if err := destination.AddRow(c.data); err != nil {
+			return fmt.Errorf("update table %q: add relocated row: %w", t.Name, err)
+		}
+		if err := t.Pager.Flush(destination); err != nil {
+			return fmt.Errorf("update table %q: flush relocated row: %w", t.Name, err)
+		}
+		if err := index.UpdateRID(c.id, uint32(destination.ID), 0); err != nil {
+			rollbackErr := destination.DeleteRow(0)
+			if rollbackErr == nil {
+				rollbackErr = t.Pager.Flush(destination)
+			}
+			return errors.Join(fmt.Errorf("update table %q: update primary index for ID %d: %w", t.Name, c.id, err), rollbackErr)
+		}
+		if err := page.DeleteRow(c.info.SlotID); err != nil {
+			return fmt.Errorf("update table %q: tombstone old row: %w", t.Name, err)
 		}
 		if err := t.Pager.Flush(page); err != nil {
-			return fmt.Errorf("update table %q page %d slot %d: %w", t.Name, info.PageID, info.SlotID, err)
-		}
-
-		if err := t.Insert(row); err != nil {
-			return fmt.Errorf("update table %q page %d slot %d: %w", t.Name, info.PageID, info.SlotID, err)
+			return fmt.Errorf("update table %q: flush old row tombstone: %w", t.Name, err)
 		}
 	}
 

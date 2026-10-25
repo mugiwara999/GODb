@@ -432,6 +432,34 @@ func TestOverwriteActiveSlot(t *testing.T) {
 	}
 }
 
+func TestReplaceRowPreservesSlotsAndLeavesPageUnchangedWhenFull(t *testing.T) {
+	p := newPage()
+	if err := p.AddRow([]byte("first")); err != nil {
+		t.Fatalf("AddRow first: %v", err)
+	}
+	if err := p.AddRow([]byte("second")); err != nil {
+		t.Fatalf("AddRow second: %v", err)
+	}
+
+	before := p.Data
+	if err := p.ReplaceRow(0, bytes.Repeat([]byte("x"), pager.PAGE_SIZE)); !errors.Is(err, pager.ErrPageFull) {
+		t.Fatalf("ReplaceRow oversized error = %v, want ErrPageFull", err)
+	}
+	if p.Data != before {
+		t.Fatal("ReplaceRow changed page bytes on failure")
+	}
+
+	if err := p.ReplaceRow(0, []byte("first, now longer")); err != nil {
+		t.Fatalf("ReplaceRow: %v", err)
+	}
+	if got, err := p.GetRow(0); err != nil || string(got) != "first, now longer" {
+		t.Fatalf("GetRow(0) = %q, err=%v", got, err)
+	}
+	if got, err := p.GetRow(1); err != nil || string(got) != "second" {
+		t.Fatalf("GetRow(1) = %q, err=%v", got, err)
+	}
+}
+
 func TestPersistenceRoundTrip(t *testing.T) {
 	// Catches serialization bugs, seek-offset bugs, and header corruption during disk writes.
 	// Persistence bugs are common because page writes often look correct in memory but fail once flushed to disk.

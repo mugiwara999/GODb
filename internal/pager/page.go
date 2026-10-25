@@ -195,6 +195,50 @@ func (p *Page) Overwrite(slotId int, data []byte) error {
 	return nil
 }
 
+// ReplaceRow repacks active row payloads while preserving slot IDs. If the
+// replacement does not fit, the page is left unchanged and ErrPageFull is
+// returned so the caller can relocate the row.
+func (p *Page) ReplaceRow(slotID int, data []byte) error {
+	if _, err := p.GetRow(slotID); err != nil {
+		return err
+	}
+	numSlots, freeStart, _, err := p.headerValues()
+	if err != nil {
+		return err
+	}
+
+	rebuilt := *p
+	freeEnd := PAGE_SIZE
+	for i := 0; i < numSlots; i++ {
+		slotPos, err := p.slotPos(i)
+		if err != nil {
+			return err
+		}
+		if p.Data[slotPos+4] == 1 {
+			continue
+		}
+
+		row, err := p.GetRow(i)
+		if err != nil {
+			return err
+		}
+		if i == slotID {
+			row = data
+		}
+		if len(row) > freeEnd-freeStart {
+			return fmt.Errorf("replace row on page %d slot %d: %w", p.ID, slotID, ErrPageFull)
+		}
+
+		freeEnd -= len(row)
+		copy(rebuilt.Data[freeEnd:freeEnd+len(row)], row)
+		binary.LittleEndian.PutUint16(rebuilt.Data[slotPos:slotPos+2], uint16(freeEnd))
+		binary.LittleEndian.PutUint16(rebuilt.Data[slotPos+2:slotPos+4], uint16(len(row)))
+	}
+	binary.LittleEndian.PutUint16(rebuilt.Data[4:6], uint16(freeEnd))
+	*p = rebuilt
+	return nil
+}
+
 func (p *Page) headerValues() (numSlots, freeStart, freeEnd int, err error) {
 	numSlots = int(binary.LittleEndian.Uint16(p.Data[:2]))
 	freeStart = int(binary.LittleEndian.Uint16(p.Data[2:4]))

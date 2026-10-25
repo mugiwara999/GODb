@@ -19,14 +19,22 @@
 - Limitations: table writes are not transactional. A failure after writing the row or index can still leave components out of sync; WAL/recovery is a separate foundational task.
 - Commit: `66dfb66` (`Harden table insert integrity`).
 
+### Preserve row identity during variable-length updates
+
+- Priority: correctness. The previous implementation called `Insert` with a full row, which prepended a second ID and failed arity validation; it also extended the iterator as it appended rows.
+- Changes: collect the matched rows before mutation; preflight replacement capacity; repack page payloads while preserving slot IDs; relocate rows that do not fit and update the existing primary-index RID. Oversized values and invalid update columns are rejected before writes.
+- Regression coverage: grow and shrink a multi-row table through both in-page replacement and relocation; verify row count, stable IDs, ID-index lookups, and reopen behavior. Oversized update leaves the original row unchanged. Pager test verifies repack slot preservation and no page mutation on `ErrPageFull`.
+- Verification: `GOCACHE=/tmp/goDB-gocache go test ./internal/pager ./internal/btree ./internal/table` passed; full `GOCACHE=/tmp/goDB-gocache go test ./...` passed; `GOCACHE=/tmp/goDB-gocache go build ./...` passed; `GOCACHE=/tmp/goDB-gocache go vet ./...` passed; `git diff --check` passed.
+- Limitations: multi-row updates are preflighted for capacity and index locations, but are not crash-atomic if a later disk write fails. The engine still has no WAL or transaction recovery.
+
 ## Prioritized backlog
 
-1. **Make table insert/update/delete atomic across row pages, ID metadata, and indexes.** Failure between the component writes can leave unreachable rows, stale RIDs, or reused IDs. Depends on a transaction or recovery design. Acceptance: injected I/O failures at each write boundary recover to a consistent table/index state; cover reopen/restart behavior.
-2. **Correct variable-length updates.** `Update` currently deletes the old slot and calls `Insert` with the full row (including ID), while the insert API prepends a new ID; its TODO also identifies iterator mutation when appended rows are on a page being scanned. Acceptance: longer and shorter replacement values update once, preserve row identity, and remain selectable through the ID index; verify across reopen.
-3. **Validate and harden B+ tree file metadata and duplicate-key semantics.** Index open currently trusts root/page counts and the tests do not clearly specify duplicate handling. Acceptance: malformed/truncated metadata returns errors without panics; duplicate key behavior is explicit and tested.
-4. **Define delete/index behavior.** Tombstoning a row leaves its ID index entry pointing at a deleted slot. Acceptance: selecting a deleted ID returns no row, and index validation can identify stale entries or maintain a valid mapping.
-5. **Add SQL/parser integration tests and usability documentation.** Parser/lexer lack test files, despite supporting CREATE/INSERT/SELECT/DELETE/UPDATE. Acceptance: representative valid and malformed statements are covered, including EOF and separator edge cases.
+1. **Define delete/index behavior.** Tombstoning a row leaves its ID index entry pointing at a deleted slot, so indexed lookup can fail for a row that a table scan treats as deleted. Acceptance: selecting a deleted ID returns no row; index consistency checks distinguish valid live RIDs from tombstones; delete/reopen behavior is covered.
+2. **Add crash-safe table mutations.** Insert/update/delete write table pages, metadata, and indexes separately, so a process or I/O failure between writes can leave inconsistent state. Depends on a WAL or another recovery design. Acceptance: injected failures at each write boundary recover to a consistent table/index state across reopen.
+3. **Validate and harden B+ tree file metadata and duplicate-key semantics.** Index open currently trusts some root/page counts and the tests do not clearly specify duplicate handling. Acceptance: malformed/truncated metadata returns errors without panics; duplicate key behavior is explicit and tested.
+4. **Add SQL/parser integration tests and usability documentation.** Parser/lexer lack test files, despite supporting CREATE/INSERT/SELECT/DELETE/UPDATE. Acceptance: representative valid and malformed statements are covered, including EOF and separator edge cases.
+5. **Measure storage and index performance.** Existing insertion tests exercise large inputs but provide no benchmark baseline. Acceptance: add reproducible benchmarks for table insert/select and B+ tree insert/find before proposing optimization.
 
 ## Next action
 
-Next task: correct variable-length updates. The reference branch contains an implementation that preflights page replacements and updates the primary-index RID on relocation; inspect and port the minimum complete design with regression coverage. Preserve the supplied untracked `AGENTS.md`.
+Next task: fix deleted-row ID lookup semantics and add a consistency check for stale index RIDs. Preserve the supplied untracked `AGENTS.md`.

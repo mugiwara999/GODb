@@ -553,6 +553,26 @@ func (ind *Index) Find(key uint64) (*RID, error) {
 
 }
 
+// UpdateRID changes the stored location for an existing key without adding a
+// second key to the tree.
+func (ind *Index) UpdateRID(key uint64, pageID uint32, slotID uint16) error {
+	_, leaf, err := ind.FindLeaf(key)
+	if err != nil {
+		return fmt.Errorf("find key %d for RID update: %w", key, err)
+	}
+	for i := 0; i < leaf.GetNumKeys(); i++ {
+		if leaf.GetKey(i) != key {
+			continue
+		}
+		leaf.SetRID(i, RID{pageID: pageID, slotID: slotID})
+		if err := ind.WritePage(leaf); err != nil {
+			return fmt.Errorf("write RID update for key %d: %w", key, err)
+		}
+		return nil
+	}
+	return fmt.Errorf("key %d not found for RID update", key)
+}
+
 func (ind *Index) PrintTree() error {
 	root, err := ind.GetRootPage()
 
