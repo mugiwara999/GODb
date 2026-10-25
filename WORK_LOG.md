@@ -17,6 +17,7 @@
 - Regression coverage: malformed, NUL-containing, and oversized inserts must leave the persisted ID and page count unchanged, and a subsequent valid insert must be retrievable by ID 0. A closed-index failure test verifies that an unindexed row stays invisible and the next successful insert uses the next ID. Test setup explicitly scopes `DATA_DIR` per test so tests do not reuse a deleted temporary directory.
 - Verification on the final code: `GOCACHE=/tmp/goDB-gocache go test ./internal/table` passed; `GOCACHE=/tmp/goDB-gocache go test ./...` passed; `GOCACHE=/tmp/goDB-gocache go build ./...` passed; `GOCACHE=/tmp/goDB-gocache go vet ./...` passed; `git diff --check` passed.
 - Limitations: table writes are not transactional. A failure after writing the row or index can still leave components out of sync; WAL/recovery is a separate foundational task.
+- Commit: `66dfb66` (`Harden table insert integrity`).
 
 ## Prioritized backlog
 
@@ -28,4 +29,4 @@
 
 ## Next action
 
-Commit the verified insert integrity fix on `agent` without staging the supplied `AGENTS.md`; record the resulting commit and continue with the next prioritized storage correctness task.
+Next task: correct variable-length updates. The reference branch contains an implementation that preflights page replacements and updates the primary-index RID on relocation; inspect and port the minimum complete design with regression coverage. Preserve the supplied untracked `AGENTS.md`.
