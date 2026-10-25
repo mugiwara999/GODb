@@ -246,10 +246,16 @@ func TestVariableLengthUpdatePreservesIDsAndIndex(t *testing.T) {
 			t.Fatalf("Insert(%d): %v", i, err)
 		}
 	}
+	if err := tbl.ValidatePrimaryIndex(); err != nil {
+		t.Fatalf("validate index before update: %v", err)
+	}
 
 	longValue := strings.Repeat("long", 120)
 	if err := tbl.Update(nil, []table.UpdateValue{{ColIdx: 1, Value: longValue}}); err != nil {
 		t.Fatalf("grow rows: %v", err)
+	}
+	if err := tbl.ValidatePrimaryIndex(); err != nil {
+		t.Fatalf("validate index after row relocation: %v", err)
 	}
 	rows, err := tbl.Select([]string{"*"}, nil)
 	if err != nil {
@@ -285,6 +291,9 @@ func TestVariableLengthUpdatePreservesIDsAndIndex(t *testing.T) {
 	tbl, err = table.Open("updates")
 	if err != nil {
 		t.Fatalf("Open after updates: %v", err)
+	}
+	if err := tbl.ValidatePrimaryIndex(); err != nil {
+		t.Fatalf("validate index after reopen: %v", err)
 	}
 	got, err := tbl.Select([]string{"*"}, []table.ColEq{{ColIdx: 0, Value: "19"}})
 	if err != nil || len(got) != 2 || got[1][1] != "x" {
@@ -325,9 +334,24 @@ func TestSelectByIDHandlesMissingAndDeletedRows(t *testing.T) {
 			t.Fatalf("Insert(%q): %v", name, err)
 		}
 	}
+	if err := tbl.ValidatePrimaryIndex(); err != nil {
+		t.Fatalf("validate index before delete: %v", err)
+	}
+	if err := tbl.Indexes["id"].UpdateRID(1, 1, 999); err != nil {
+		t.Fatalf("corrupt ID 1 index RID: %v", err)
+	}
+	if err := tbl.ValidatePrimaryIndex(); err == nil {
+		t.Fatal("ValidatePrimaryIndex accepted an invalid row location")
+	}
+	if err := tbl.Indexes["id"].UpdateRID(1, 1, 1); err != nil {
+		t.Fatalf("restore ID 1 index RID: %v", err)
+	}
 
 	if err := tbl.Delete([]table.ColEq{{ColIdx: 0, Value: "0"}}); err != nil {
 		t.Fatalf("Delete ID 0: %v", err)
+	}
+	if err := tbl.ValidatePrimaryIndex(); err == nil || !strings.Contains(err.Error(), "deleted row") {
+		t.Fatalf("ValidatePrimaryIndex after delete = %v, want stale deleted-row error", err)
 	}
 	for _, id := range []string{"0", "99"} {
 		rows, err := tbl.Select([]string{"id", "name"}, []table.ColEq{{ColIdx: 0, Value: id}})

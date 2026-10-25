@@ -34,12 +34,20 @@
 - Changes: pager reads now distinguish `ErrDeletedSlot` from `ErrInvalidSlot`; B+ tree lookups wrap `ErrKeyNotFound`; indexed table SELECT returns its header with no rows for a missing key or tombstone, while invalid slot RIDs still return an error.
 - Regression coverage: select a deleted and absent ID and expect a header-only result; inject an invalid slot into the index and verify the corruption remains an error; B+ tree tests assert `errors.Is(..., ErrKeyNotFound)`.
 - Verification: `GOCACHE=/tmp/goDB-gocache go test ./internal/pager ./internal/btree ./internal/table` passed; full `GOCACHE=/tmp/goDB-gocache go test ./...` passed; `GOCACHE=/tmp/goDB-gocache go build ./...` passed; `GOCACHE=/tmp/goDB-gocache go vet ./...` passed; `git diff --check` passed.
-- Limitation: DELETE still leaves the stale primary-index entry on disk; SELECT now handles that tombstone, but index maintenance and a full row/index consistency validator remain future work.
+- Limitation: DELETE still leaves the stale primary-index entry on disk; SELECT handles that tombstone, and the new validator reports it until physical index deletion is implemented.
 - Commit: `f30adae` (`Handle deleted row ID lookups`).
+
+### Add a primary-index consistency validator
+
+- Priority: data-integrity diagnostics. Structural B+ tree validation alone cannot prove that leaf RIDs match stored rows or that every live table row is indexed.
+- Changes: `Table.ValidatePrimaryIndex` runs structural validation, walks the leaf chain, verifies each entry points to a live row with the matching ID, and checks every live row maps back to its exact RID. It reports duplicate keys, missing entries, bad locations, mismatched IDs, and tombstoned index entries.
+- Regression coverage: validation passes on a populated table and after row relocation/reopen; corrupted RIDs and stale entries after DELETE are rejected.
+- Verification: `GOCACHE=/tmp/goDB-gocache go test ./internal/table` passed; full `GOCACHE=/tmp/goDB-gocache go test ./...` passed; `GOCACHE=/tmp/goDB-gocache go build ./...` passed; `GOCACHE=/tmp/goDB-gocache go vet ./...` passed; `git diff --check` passed.
+- Limitation: this adds diagnosis, not physical B+ tree deletion. A table with deleted rows is expected to fail this strict consistency check until index deletion is implemented.
 
 ## Prioritized backlog
 
-1. **Maintain index entries and validate table/index consistency after DELETE and UPDATE.** Delete still leaves tombstoned RIDs in the primary index. Acceptance: define index behavior, detect stale RIDs during a table/index validator, and cover delete/update/reopen paths.
+1. **Remove deleted rows from the primary B+ tree.** The new validator detects tombstoned RIDs, but DELETE still leaves them in the index. This depends on a safe B+ tree key deletion/rebalancing design. Acceptance: after delete, indexed lookup remains empty, the table/index validator passes, and delete/reopen cases cover leaf and internal-node boundaries.
 2. **Add crash-safe table mutations.** Insert/update/delete write table pages, metadata, and indexes separately, so a process or I/O failure between writes can leave inconsistent state. Depends on a WAL or another recovery design. Acceptance: injected failures at each write boundary recover to a consistent table/index state across reopen.
 3. **Validate and harden B+ tree file metadata and duplicate-key semantics.** Index open still trusts some root/page counts, and this branch does not specify duplicate handling. Acceptance: malformed/truncated metadata returns errors without panics; duplicate key behavior is explicit and tested.
 4. **Add SQL/parser integration tests and usability documentation.** Parser/lexer lack test files, despite supporting CREATE/INSERT/SELECT/DELETE/UPDATE. Acceptance: representative valid and malformed statements are covered, including EOF and separator edge cases.
@@ -47,4 +55,4 @@
 
 ## Next action
 
-Next task: define physical primary-index maintenance for DELETE and add a table/index validator that detects stale or mismatched RIDs; cover deletion and row relocation across reopen. Preserve the supplied untracked `AGENTS.md`.
+Next task: implement B+ tree key deletion and primary-index maintenance for table DELETE, using the validator to prove consistency before and after reopen. Preserve the supplied untracked `AGENTS.md`.
