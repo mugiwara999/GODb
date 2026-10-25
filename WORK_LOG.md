@@ -35,6 +35,7 @@
 - Regression coverage: select a deleted and absent ID and expect a header-only result; inject an invalid slot into the index and verify the corruption remains an error; B+ tree tests assert `errors.Is(..., ErrKeyNotFound)`.
 - Verification: `GOCACHE=/tmp/goDB-gocache go test ./internal/pager ./internal/btree ./internal/table` passed; full `GOCACHE=/tmp/goDB-gocache go test ./...` passed; `GOCACHE=/tmp/goDB-gocache go build ./...` passed; `GOCACHE=/tmp/goDB-gocache go vet ./...` passed; `git diff --check` passed.
 - Limitation: DELETE still leaves the stale primary-index entry on disk; SELECT now handles that tombstone, but index maintenance and a full row/index consistency validator remain future work.
+- Commit: `f30adae` (`Handle deleted row ID lookups`).
 
 ## Prioritized backlog
 
