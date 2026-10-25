@@ -683,6 +683,62 @@ func TestCorruptedSlotOffsetsAndHeaders(t *testing.T) {
 			t.Fatalf("AddRow error = %v, want ErrCorruptPageHeader", err)
 		}
 	})
+
+	t.Run("invalid deletion flag", func(t *testing.T) {
+		p := newPage()
+		if err := p.AddRow([]byte("row")); err != nil {
+			t.Fatalf("AddRow failed: %v", err)
+		}
+		p.Data[10] = 2
+		if err := p.Validate(); !errors.Is(err, pager.ErrCorruptPageData) {
+			t.Fatalf("Validate error = %v, want ErrCorruptPageData", err)
+		}
+	})
+
+	t.Run("overlapping live slots", func(t *testing.T) {
+		p := newPage()
+		if err := p.AddRow([]byte("first")); err != nil {
+			t.Fatalf("AddRow first: %v", err)
+		}
+		if err := p.AddRow([]byte("second")); err != nil {
+			t.Fatalf("AddRow second: %v", err)
+		}
+		firstOffset := binary.LittleEndian.Uint16(p.Data[6:8])
+		binary.LittleEndian.PutUint16(p.Data[11:13], firstOffset)
+		if err := p.Validate(); !errors.Is(err, pager.ErrCorruptPageData) {
+			t.Fatalf("Validate error = %v, want ErrCorruptPageData", err)
+		}
+	})
+
+	t.Run("pager rejects corrupt data page on read", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "table.bin")
+		pg, err := pager.CreatePager(path)
+		if err != nil {
+			t.Fatalf("CreatePager: %v", err)
+		}
+		defer pg.Close()
+		if err := pg.WriteColumns([]string{"id"}); err != nil {
+			t.Fatalf("WriteColumns: %v", err)
+		}
+		page, err := pg.NewPage()
+		if err != nil {
+			t.Fatalf("NewPage: %v", err)
+		}
+		if err := page.AddRow([]byte("first")); err != nil {
+			t.Fatalf("AddRow first: %v", err)
+		}
+		if err := page.AddRow([]byte("second")); err != nil {
+			t.Fatalf("AddRow second: %v", err)
+		}
+		firstOffset := binary.LittleEndian.Uint16(page.Data[6:8])
+		binary.LittleEndian.PutUint16(page.Data[11:13], firstOffset)
+		if err := pg.Flush(page); err != nil {
+			t.Fatalf("Flush corrupt page: %v", err)
+		}
+		if _, err := pg.GetPage(page.ID); !errors.Is(err, pager.ErrCorruptPageData) {
+			t.Fatalf("GetPage error = %v, want ErrCorruptPageData", err)
+		}
+	})
 }
 
 func TestRandomizedRoundTripAndInvariants(t *testing.T) {

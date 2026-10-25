@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 )
 
 const PAGE_SIZE = 4096
@@ -257,6 +258,43 @@ func (p *Page) headerValues() (numSlots, freeStart, freeEnd int, err error) {
 	return numSlots, freeStart, freeEnd, nil
 }
 
+// Validate checks every slot entry and ensures active row payloads are in the
+// data area and do not overlap. Tombstone payload bytes may be reclaimed.
+func (p *Page) Validate() error {
+	numSlots, _, freeEnd, err := p.headerValues()
+	if err != nil {
+		return err
+	}
+	type rowRange struct {
+		start int
+		end   int
+		slot  int
+	}
+	ranges := make([]rowRange, 0, numSlots)
+	for slotID := 0; slotID < numSlots; slotID++ {
+		pos := 6 + slotID*5
+		flag := p.Data[pos+4]
+		if flag > 1 {
+			return fmt.Errorf("page %d slot %d: %w (invalid deletion flag %d)", p.ID, slotID, ErrCorruptPageData, flag)
+		}
+		start := int(binary.LittleEndian.Uint16(p.Data[pos : pos+2]))
+		size := int(binary.LittleEndian.Uint16(p.Data[pos+2 : pos+4]))
+		if start > PAGE_SIZE || size > PAGE_SIZE-start || (flag == 0 && start < freeEnd) {
+			return fmt.Errorf("page %d slot %d: %w (offset=%d size=%d freeEnd=%d)", p.ID, slotID, ErrCorruptPageData, start, size, freeEnd)
+		}
+		if flag == 0 && size > 0 {
+			ranges = append(ranges, rowRange{start: start, end: start + size, slot: slotID})
+		}
+	}
+	sort.Slice(ranges, func(i, j int) bool { return ranges[i].start < ranges[j].start })
+	for i := 1; i < len(ranges); i++ {
+		if ranges[i].start < ranges[i-1].end {
+			return fmt.Errorf("page %d: %w (active slots %d and %d overlap)", p.ID, ErrCorruptPageData, ranges[i-1].slot, ranges[i].slot)
+		}
+	}
+	return nil
+}
+
 func (p *Page) slotPos(slotID int) (int, error) {
 	numSlots, _, _, err := p.headerValues()
 	if err != nil {
@@ -265,7 +303,11 @@ func (p *Page) slotPos(slotID int) (int, error) {
 	if slotID < 0 || slotID >= numSlots {
 		return 0, fmt.Errorf("page %d slot %d: %w (numSlots=%d)", p.ID, slotID, ErrInvalidSlot, numSlots)
 	}
-	return 6 + slotID*5, nil
+	pos := 6 + slotID*5
+	if p.Data[pos+4] > 1 {
+		return 0, fmt.Errorf("page %d slot %d: %w (invalid deletion flag)", p.ID, slotID, ErrCorruptPageData)
+	}
+	return pos, nil
 }
 
 func (p *Page) FreeSpace() (int, error) {

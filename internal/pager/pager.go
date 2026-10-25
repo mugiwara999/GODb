@@ -79,6 +79,11 @@ func (p *Pager) GetPage(pageID int) (*Page, error) {
 		ID:   pageID,
 		Data: pageData,
 	}
+	if pageID > 0 {
+		if err := page.Validate(); err != nil {
+			return nil, fmt.Errorf("get page %d from %q: %w", pageID, p.path, err)
+		}
+	}
 
 	return page, nil
 
@@ -306,6 +311,8 @@ type rowIterator struct {
 	pager  *Pager
 	pageID int
 	slotID int
+	page   *Page
+	nSlots int
 }
 
 func (p *Pager) RowIterator() *rowIterator {
@@ -323,26 +330,29 @@ func (it *rowIterator) Next() ([]byte, error) {
 			return nil, nil
 		}
 
-		page, err := it.pager.GetPage(it.pageID)
-		if err != nil {
-			return nil, fmt.Errorf("iterate rows at page %d slot %d: %w", it.pageID, it.slotID, err)
+		if it.page == nil || it.page.ID != it.pageID {
+			page, err := it.pager.GetPage(it.pageID)
+			if err != nil {
+				return nil, fmt.Errorf("iterate rows at page %d slot %d: %w", it.pageID, it.slotID, err)
+			}
+			numSlots, _, _, err := page.headerValues()
+			if err != nil {
+				return nil, fmt.Errorf("iterate rows at page %d slot %d: %w", it.pageID, it.slotID, err)
+			}
+			it.page = page
+			it.nSlots = numSlots
 		}
-
-		numSlots, _, _, err := page.headerValues()
-		if err != nil {
-			return nil, fmt.Errorf("iterate rows at page %d slot %d: %w", it.pageID, it.slotID, err)
-		}
-		if it.slotID >= numSlots {
+		if it.slotID >= it.nSlots {
 			it.pageID++
 			it.slotID = -1
 			continue
 		}
 
-		if page.isDeleted(it.slotID) {
+		if it.page.isDeleted(it.slotID) {
 			continue
 		}
 
-		row, err := page.GetRow(it.slotID)
+		row, err := it.page.GetRow(it.slotID)
 		if err != nil {
 			return nil, fmt.Errorf("iterate rows at page %d slot %d: %w", it.pageID, it.slotID, err)
 		}
