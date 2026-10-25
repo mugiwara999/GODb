@@ -26,15 +26,24 @@
 - Regression coverage: grow and shrink a multi-row table through both in-page replacement and relocation; verify row count, stable IDs, ID-index lookups, and reopen behavior. Oversized update leaves the original row unchanged. Pager test verifies repack slot preservation and no page mutation on `ErrPageFull`.
 - Verification: `GOCACHE=/tmp/goDB-gocache go test ./internal/pager ./internal/btree ./internal/table` passed; full `GOCACHE=/tmp/goDB-gocache go test ./...` passed; `GOCACHE=/tmp/goDB-gocache go build ./...` passed; `GOCACHE=/tmp/goDB-gocache go vet ./...` passed; `git diff --check` passed.
 - Limitations: multi-row updates are preflighted for capacity and index locations, but are not crash-atomic if a later disk write fails. The engine still has no WAL or transaction recovery.
+- Commit: `e8b5830` (`Preserve IDs in variable-length updates`).
+
+### Treat deleted and missing ID lookups as empty results
+
+- Priority: correctness. DELETE leaves the primary index pointing to a tombstoned slot, and `SELECT ... WHERE id=...` previously surfaced the tombstone as an invalid-slot error. Missing keys also returned a generic error rather than an empty result.
+- Changes: pager reads now distinguish `ErrDeletedSlot` from `ErrInvalidSlot`; B+ tree lookups wrap `ErrKeyNotFound`; indexed table SELECT returns its header with no rows for a missing key or tombstone, while invalid slot RIDs still return an error.
+- Regression coverage: select a deleted and absent ID and expect a header-only result; inject an invalid slot into the index and verify the corruption remains an error; B+ tree tests assert `errors.Is(..., ErrKeyNotFound)`.
+- Verification: `GOCACHE=/tmp/goDB-gocache go test ./internal/pager ./internal/btree ./internal/table` passed; full `GOCACHE=/tmp/goDB-gocache go test ./...` passed; `GOCACHE=/tmp/goDB-gocache go build ./...` passed; `GOCACHE=/tmp/goDB-gocache go vet ./...` passed; `git diff --check` passed.
+- Limitation: DELETE still leaves the stale primary-index entry on disk; SELECT now handles that tombstone, but index maintenance and a full row/index consistency validator remain future work.
 
 ## Prioritized backlog
 
-1. **Define delete/index behavior.** Tombstoning a row leaves its ID index entry pointing at a deleted slot, so indexed lookup can fail for a row that a table scan treats as deleted. Acceptance: selecting a deleted ID returns no row; index consistency checks distinguish valid live RIDs from tombstones; delete/reopen behavior is covered.
+1. **Maintain index entries and validate table/index consistency after DELETE and UPDATE.** Delete still leaves tombstoned RIDs in the primary index. Acceptance: define index behavior, detect stale RIDs during a table/index validator, and cover delete/update/reopen paths.
 2. **Add crash-safe table mutations.** Insert/update/delete write table pages, metadata, and indexes separately, so a process or I/O failure between writes can leave inconsistent state. Depends on a WAL or another recovery design. Acceptance: injected failures at each write boundary recover to a consistent table/index state across reopen.
-3. **Validate and harden B+ tree file metadata and duplicate-key semantics.** Index open currently trusts some root/page counts and the tests do not clearly specify duplicate handling. Acceptance: malformed/truncated metadata returns errors without panics; duplicate key behavior is explicit and tested.
+3. **Validate and harden B+ tree file metadata and duplicate-key semantics.** Index open still trusts some root/page counts, and this branch does not specify duplicate handling. Acceptance: malformed/truncated metadata returns errors without panics; duplicate key behavior is explicit and tested.
 4. **Add SQL/parser integration tests and usability documentation.** Parser/lexer lack test files, despite supporting CREATE/INSERT/SELECT/DELETE/UPDATE. Acceptance: representative valid and malformed statements are covered, including EOF and separator edge cases.
 5. **Measure storage and index performance.** Existing insertion tests exercise large inputs but provide no benchmark baseline. Acceptance: add reproducible benchmarks for table insert/select and B+ tree insert/find before proposing optimization.
 
 ## Next action
 
-Next task: fix deleted-row ID lookup semantics and add a consistency check for stale index RIDs. Preserve the supplied untracked `AGENTS.md`.
+Next task: define physical primary-index maintenance for DELETE and add a table/index validator that detects stale or mismatched RIDs; cover deletion and row relocation across reopen. Preserve the supplied untracked `AGENTS.md`.

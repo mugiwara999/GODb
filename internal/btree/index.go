@@ -2,6 +2,7 @@ package btree
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -16,6 +17,8 @@ type Index struct {
 const (
 	metaPageID = 0
 )
+
+var ErrKeyNotFound = errors.New("key not found")
 
 // leaf node layout
 // Byte 0:      nodeType (1 = leaf)
@@ -549,7 +552,7 @@ func (ind *Index) Find(key uint64) (*RID, error) {
 		}
 	}
 
-	return nil, fmt.Errorf("key %d not found in leaf page %d", key, leaf.ID)
+	return nil, fmt.Errorf("key %d not found in leaf page %d: %w", key, leaf.ID, ErrKeyNotFound)
 
 }
 

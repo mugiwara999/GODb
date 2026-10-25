@@ -311,3 +311,38 @@ func TestOversizedUpdateLeavesExistingRowsLive(t *testing.T) {
 		t.Fatalf("row after failed oversized update = %v, err=%v", rows, err)
 	}
 }
+
+func TestSelectByIDHandlesMissingAndDeletedRows(t *testing.T) {
+	setupTableTest(t)
+
+	tbl, err := table.Create("select_deleted", []string{"name"})
+	if err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+	t.Cleanup(func() { _ = tbl.Close() })
+	for _, name := range []string{"first", "second"} {
+		if err := tbl.Insert([]string{name}); err != nil {
+			t.Fatalf("Insert(%q): %v", name, err)
+		}
+	}
+
+	if err := tbl.Delete([]table.ColEq{{ColIdx: 0, Value: "0"}}); err != nil {
+		t.Fatalf("Delete ID 0: %v", err)
+	}
+	for _, id := range []string{"0", "99"} {
+		rows, err := tbl.Select([]string{"id", "name"}, []table.ColEq{{ColIdx: 0, Value: id}})
+		if err != nil {
+			t.Fatalf("Select ID %s: %v", id, err)
+		}
+		if len(rows) != 1 || rows[0][0] != "id" || rows[0][1] != "name" {
+			t.Fatalf("Select ID %s = %q, want header only", id, rows)
+		}
+	}
+
+	if err := tbl.Indexes["id"].UpdateRID(1, 1, 999); err != nil {
+		t.Fatalf("corrupt ID 1 index RID: %v", err)
+	}
+	if _, err := tbl.Select([]string{"*"}, []table.ColEq{{ColIdx: 0, Value: "1"}}); err == nil {
+		t.Fatal("Select with invalid slot RID succeeded, want corruption error")
+	}
+}

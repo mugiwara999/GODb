@@ -1,6 +1,7 @@
 package btree
 
 import (
+	"errors"
 	"math/rand"
 	// "path/filepath"
 	"testing"
@@ -81,8 +82,8 @@ func TestInsertRandom(t *testing.T) {
 		}
 
 		// Look for non‑existent key
-		if _, err := idx.Find(^uint64(0)); err == nil {
-			t.Error("expected error for non‑existent key")
+		if _, err := idx.Find(^uint64(0)); !errors.Is(err, ErrKeyNotFound) {
+			t.Errorf("Find non-existent key error = %v, want ErrKeyNotFound", err)
 		}
 	})
 }

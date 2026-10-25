@@ -18,6 +18,7 @@ type Page struct {
 var (
 	ErrPageFull          = errors.New("page full")
 	ErrInvalidSlot       = errors.New("invalid slot")
+	ErrDeletedSlot       = errors.New("deleted slot")
 	ErrInvalidPageID     = errors.New("invalid page id")
 	ErrCorruptPageHeader = errors.New("corrupt page header")
 	ErrCorruptPageData   = errors.New("corrupt page data")
@@ -134,7 +135,7 @@ func (p *Page) GetRow(slotID int) ([]byte, error) {
 	}
 
 	if p.Data[slotPos+4] == 1 {
-		return nil, fmt.Errorf("read row from page %d slot %d: %w", p.ID, slotID, ErrInvalidSlot)
+		return nil, fmt.Errorf("read row from page %d slot %d: %w", p.ID, slotID, ErrDeletedSlot)
 	}
 
 	offset := int(binary.LittleEndian.Uint16(p.Data[slotPos : slotPos+2]))

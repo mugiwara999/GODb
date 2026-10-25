@@ -393,8 +393,8 @@ func TestDeletionAndTombstones(t *testing.T) {
 		t.Fatalf("DeleteRow(1) returned error: %v", err)
 	}
 
-	if _, err := p.GetRow(1); !errors.Is(err, pager.ErrInvalidSlot) {
-		t.Fatalf("GetRow(1) after delete error = %v, want ErrInvalidSlot", err)
+	if _, err := p.GetRow(1); !errors.Is(err, pager.ErrDeletedSlot) {
+		t.Fatalf("GetRow(1) after delete error = %v, want ErrDeletedSlot", err)
 	}
 
 	afterNum, afterFreeStart, afterFreeEnd := header(p)

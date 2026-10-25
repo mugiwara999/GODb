@@ -184,7 +184,14 @@ func (t *Table) Select(columns []string, colEquals []ColEq) ([][]string, error) 
 				return nil, fmt.Errorf("select from table %q: invalid id value %q: %w", t.Name, v.Value, err)
 			}
 			// since id is unique, we can use the index to find the row directly
-			rid, err := t.Indexes["id"].Find(id)
+			index := t.Indexes["id"]
+			if index == nil {
+				return nil, fmt.Errorf("select from table %q: missing primary key index", t.Name)
+			}
+			rid, err := index.Find(id)
+			if errors.Is(err, btree.ErrKeyNotFound) {
+				return result, nil
+			}
 			if err != nil {
 				return nil, fmt.Errorf("select from table %q: %w", t.Name, err)
 			}
@@ -193,6 +200,9 @@ func (t *Table) Select(columns []string, colEquals []ColEq) ([][]string, error) 
 				return nil, fmt.Errorf("select from table %q: %w", t.Name, err)
 			}
 			rowData, err := page.GetRow(int(rid.GetSlotID()))
+			if errors.Is(err, pager.ErrDeletedSlot) {
+				return result, nil
+			}
 			if err != nil {
 				return nil, fmt.Errorf("select from table %q: %w", t.Name, err)
 			}
