@@ -1,9 +1,13 @@
 package table
 
 import (
+	"errors"
 	"fmt"
-	"github.com/mugiwara999/goDB/internal/pager"
+	"math"
 	"strconv"
+	"strings"
+
+	"github.com/mugiwara999/goDB/internal/pager"
 )
 
 type ColEq struct {
@@ -40,6 +44,17 @@ func DeserializeRow(data []byte) []string {
 }
 
 func (t *Table) Insert(values []string) error {
+	if len(values)+1 != len(t.cols) {
+		return fmt.Errorf("insert into table %q: expected %d values, got %d", t.Name, len(t.cols)-1, len(values))
+	}
+	for _, value := range values {
+		if strings.ContainsRune(value, 0) {
+			return fmt.Errorf("insert into table %q: values cannot contain NUL", t.Name)
+		}
+	}
+	if t.Indexes["id"] == nil {
+		return fmt.Errorf("insert into table %q: missing primary key index", t.Name)
+	}
 
 	lastID, err := t.Pager.LastID()
 
@@ -47,15 +62,21 @@ func (t *Table) Insert(values []string) error {
 		return fmt.Errorf("insert into table %q: %w", t.Name, err)
 	}
 
+	if lastID == math.MaxUint64 {
+		return fmt.Errorf("insert into table %q: ID space exhausted", t.Name)
+	}
 	lastID++
-	t.Pager.SetLastID(lastID)
 
 	var lastPage *pager.Page
 
 	values = append([]string{fmt.Sprintf("%d", lastID-1)}, values...)
-
-	if len(values) != len(t.cols) {
-		return fmt.Errorf("insert into table %q: expected %d values, got %d", t.Name, len(t.cols), len(values))
+	rowData := SerializeRow(values)
+	if len(rowData) > pager.PAGE_SIZE-11 {
+		return fmt.Errorf("insert into table %q: row requires %d bytes, maximum is %d", t.Name, len(rowData), pager.PAGE_SIZE-11)
+	}
+	// Reserve the ID before storing the row so a failed write cannot silently reuse it.
+	if err := t.Pager.SetLastID(lastID); err != nil {
+		return fmt.Errorf("insert into table %q: %w", t.Name, err)
 	}
 	if t.Pager.GetNumPages() <= 1 {
 		lastPage, err = t.Pager.NewPage()
@@ -68,7 +89,7 @@ func (t *Table) Insert(values []string) error {
 			return fmt.Errorf("insert into table %q: %w", t.Name, err)
 		}
 
-		if !lastPage.CanFit(len(SerializeRow(values))) {
+		if !lastPage.CanFit(len(rowData)) {
 			lastPage, err = t.Pager.NewPage()
 			if err != nil {
 				return fmt.Errorf("insert into table %q: %w", t.Name, err)
@@ -76,7 +97,6 @@ func (t *Table) Insert(values []string) error {
 		}
 	}
 
-	rowData := SerializeRow(values)
 	if err := lastPage.AddRow(rowData); err != nil {
 		return fmt.Errorf("insert into table %q: %w", t.Name, err)
 	}
@@ -96,7 +116,14 @@ func (t *Table) Insert(values []string) error {
 	err = t.Indexes["id"].Insert(lastID-1, uint32(lastPage.ID), uint16(slotID))
 
 	if err != nil {
-		return err
+		indexErr := fmt.Errorf("insert row ID %d into primary index: %w", lastID-1, err)
+		if rollbackErr := lastPage.DeleteRow(slotID); rollbackErr != nil {
+			return errors.Join(indexErr, fmt.Errorf("mark unindexed row deleted: %w", rollbackErr))
+		}
+		if rollbackErr := t.Pager.Flush(lastPage); rollbackErr != nil {
+			return errors.Join(indexErr, fmt.Errorf("persist unindexed row rollback: %w", rollbackErr))
+		}
+		return indexErr
 	}
 
 	// TODO: It requires values[] to be someStruct[] with types

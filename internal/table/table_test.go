@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"testing"
 
+	"github.com/mugiwara999/goDB/internal/btree"
 	"github.com/mugiwara999/goDB/internal/table"
 )
 
@@ -18,6 +19,7 @@ func setupTableTest(t *testing.T) string {
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		t.Fatalf("mkdir data dir: %v", err)
 	}
+	t.Setenv("DATA_DIR", dataDir)
 
 	envPath := filepath.Join(root, ".env")
 	if err := os.WriteFile(envPath, []byte("DATA_DIR="+dataDir+"\n"), 0o644); err != nil {
@@ -113,5 +115,117 @@ func TestTableThousandsOfInsertsAndTombstones(t *testing.T) {
 			t.Fatalf("row %d mismatch after delete: got %q want %q", i, res[pos], wantRows[i])
 		}
 		pos++
+	}
+}
+
+func TestRejectedInsertDoesNotConsumeIDOrAllocatePage(t *testing.T) {
+	setupTableTest(t)
+
+	tbl, err := table.Create("users", []string{"name"})
+	if err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+	t.Cleanup(func() { _ = tbl.Close() })
+
+	initialPages := tbl.Pager.GetNumPages()
+	if err := tbl.Insert(nil); err == nil {
+		t.Fatal("Insert with missing values succeeded, want validation error")
+	}
+	if err := tbl.Insert([]string{"bad\x00value"}); err == nil {
+		t.Fatal("Insert with NUL in value succeeded, want validation error")
+	}
+
+	lastID, err := tbl.Pager.LastID()
+	if err != nil {
+		t.Fatalf("LastID after rejected insert: %v", err)
+	}
+	if lastID != 0 {
+		t.Fatalf("LastID after rejected insert = %d, want 0", lastID)
+	}
+	if got := tbl.Pager.GetNumPages(); got != initialPages {
+		t.Fatalf("page count after rejected insert = %d, want %d", got, initialPages)
+	}
+
+	if err := tbl.Insert([]string{"alice"}); err != nil {
+		t.Fatalf("valid Insert failed: %v", err)
+	}
+	rows, err := tbl.Select([]string{"id", "name"}, []table.ColEq{{ColIdx: 0, Value: "0"}})
+	if err != nil {
+		t.Fatalf("Select inserted row by ID: %v", err)
+	}
+	if len(rows) != 2 || rows[1][0] != "0" || rows[1][1] != "alice" {
+		t.Fatalf("Select by ID = %q, want header and row [0 alice]", rows)
+	}
+}
+
+func TestIndexInsertFailureRollsBackLiveRowAndKeepsIDsMonotonic(t *testing.T) {
+	setupTableTest(t)
+
+	tbl, err := table.Create("rollback_insert", []string{"name"})
+	if err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+	t.Cleanup(func() { _ = tbl.Close() })
+
+	if err := tbl.Indexes["id"].Close(); err != nil {
+		t.Fatalf("close primary index: %v", err)
+	}
+	if err := tbl.Insert([]string{"unindexed"}); err == nil {
+		t.Fatal("Insert succeeded with closed primary index")
+	}
+	rows, err := tbl.Select([]string{"*"}, nil)
+	if err != nil {
+		t.Fatalf("Select after failed index insert: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("Select after failed index insert returned %d rows, want header only", len(rows))
+	}
+	lastID, err := tbl.Pager.LastID()
+	if err != nil {
+		t.Fatalf("LastID after failed index insert: %v", err)
+	}
+	if lastID != 1 {
+		t.Fatalf("LastID after failed index insert = %d, want reserved ID count 1", lastID)
+	}
+
+	index, err := btree.OpenIndex("rollback_insert", "id")
+	if err != nil {
+		t.Fatalf("reopen primary index: %v", err)
+	}
+	tbl.Indexes["id"] = index
+	if err := tbl.Insert([]string{"valid"}); err != nil {
+		t.Fatalf("Insert after reopening index: %v", err)
+	}
+	rows, err = tbl.Select([]string{"*"}, nil)
+	if err != nil {
+		t.Fatalf("Select after valid insert: %v", err)
+	}
+	if len(rows) != 2 || rows[1][0] != "1" || rows[1][1] != "valid" {
+		t.Fatalf("Select after valid insert = %q, want row [1 valid]", rows)
+	}
+}
+
+func TestOversizedInsertDoesNotConsumeIDOrAllocatePage(t *testing.T) {
+	setupTableTest(t)
+
+	tbl, err := table.Create("users", []string{"name"})
+	if err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+	t.Cleanup(func() { _ = tbl.Close() })
+
+	initialPages := tbl.Pager.GetNumPages()
+	if err := tbl.Insert([]string{string(make([]byte, 4096))}); err == nil {
+		t.Fatal("oversized Insert succeeded, want page-full error")
+	}
+	lastID, err := tbl.Pager.LastID()
+	if err != nil {
+		t.Fatalf("LastID after oversized insert: %v", err)
+	}
+	if lastID != 0 {
+		t.Fatalf("LastID after oversized insert = %d, want 0", lastID)
+	}
+	if got := tbl.Pager.GetNumPages(); got != initialPages {
+		t.Fatalf("page count after oversized insert = %d, want %d", got, initialPages)
 	}
 }
