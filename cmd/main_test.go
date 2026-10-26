@@ -71,6 +71,8 @@ func TestCommandLoopCreatesTypedColumnsAndValidatesValues(t *testing.T) {
 	input := strings.Join([]string{
 		"CREATE TABLE people (age UINT64, name TEXT)",
 		"INSERT INTO people VALUES 00042, 'Ada'",
+		"INSERT INTO people VALUES 42, 'Grace'",
+		"CREATE INDEX ON people(age)",
 		"SELECT age FROM people WHERE age=42",
 		"INSERT INTO people VALUES invalid, 'Grace'",
 		"UPDATE people SET age=43 WHERE name='Ada'",
@@ -101,7 +103,7 @@ func TestCommandLoopCreatesTypedColumnsAndValidatesValues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Select persisted rows: %v", err)
 	}
-	if len(rows) != 2 || strings.Join(rows[1], ",") != "43,Ada" {
-		t.Fatalf("persisted rows = %q, want [43 Ada]", rows)
+	if len(rows) != 3 || strings.Join(rows[1], ",") != "43,Ada" || strings.Join(rows[2], ",") != "42,Grace" {
+		t.Fatalf("persisted rows = %q, want Ada and Grace", rows)
 	}
 }

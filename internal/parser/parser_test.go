@@ -14,6 +14,7 @@ func TestParseSupportedStatements(t *testing.T) {
 	}{
 		{"create", "CREATE TABLE users (name, age)", Query{Type: "create", Table: "users", Columns: []string{"name", "age"}}},
 		{"typed create", "CREATE TABLE users (name TEXT, age UINT64)", Query{Type: "create", Table: "users", Columns: []string{"name", "age"}, ColumnTypes: []string{"text", "uint64"}}},
+		{"create index", "CREATE INDEX ON users(age)", Query{Type: "create_index", Table: "users", Columns: []string{"age"}}},
 		{"insert", "INSERT INTO users VALUES 'Ada Lovelace', 36", Query{Type: "insert", Table: "users", Values: []string{"Ada Lovelace", "36"}}},
 		{"select", "SELECT id, name FROM users WHERE id=7 AND name='Ada'", Query{Type: "select", Table: "users", Columns: []string{"id", "name"}, Filters: []Pair{{"id", "7"}, {"name", "Ada"}}}},
 		{"delete all", "DELETE FROM users", Query{Type: "delete", Table: "users"}},
@@ -39,6 +40,10 @@ func TestParseRejectsMalformedSeparatorsAndTrailingTokens(t *testing.T) {
 		"CREATE TABLE users (name) ignored",
 		"CREATE TABLE users (name TEXT, age)",
 		"CREATE TABLE users (name DECIMAL)",
+		"CREATE INDEX users_age ON users(age)",
+		"CREATE INDEX ON users()",
+		"CREATE INDEX ON users(age, name)",
+		"CREATE INDEX ON users(age) trailing",
 		"INSERT INTO users VALUES Ada 36",
 		"INSERT INTO users VALUES Ada,",
 		"SELECT id name FROM users",

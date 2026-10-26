@@ -265,14 +265,15 @@ The project contains a recursive validator that checks important B+ Tree invaria
 
 This validator is heavily used while developing the storage engine.
 
-`Table.ValidatePrimaryIndex` checks the generated ID index. `Table.ValidateIndexes` additionally checks every open secondary index against the live rows. The Go API supports `Table.CreateIndex("age")` for `UINT64` columns; it backfills existing rows, and equality filters use the index. The SQL subset does not yet include `CREATE INDEX`.
+`Table.ValidatePrimaryIndex` checks the generated ID index. `Table.ValidateIndexes` additionally checks every open secondary index against the live rows. The Go API supports `Table.CreateIndex("age")` for `UINT64` columns; it backfills existing rows, and equality filters use the index. `CREATE INDEX ON users(age)` exposes the same operation in SQL. Indexes are named by their table and column in storage, so this syntax does not take a user-defined index name.
 
 ## SQL subset
 
 The command-line program reads one statement per input line. Keywords and identifiers are case-insensitive. String values use single quotes; the current lexer does not support escaping an apostrophe inside a string. Statements do not use a trailing semicolon.
 
 ```sql
-CREATE TABLE users (name, age)
+CREATE TABLE users (name TEXT, age UINT64)
+CREATE INDEX ON users(age)
 INSERT INTO users VALUES 'Ada Lovelace', 36
 SELECT id, name FROM users WHERE id=0 AND name='Ada Lovelace'
 UPDATE users SET age=37 WHERE id=0
@@ -308,7 +309,6 @@ Some features commonly found in production databases are not yet implemented:
 * SQL planner and optimizer
 * Snapshot isolation for reads during concurrent writes
 * Buffer pool
-* SQL `CREATE INDEX` syntax; the Go API currently creates `UINT64` secondary indexes
 * Secondary indexes over `TEXT` columns
 
 These are possible future additions.

@@ -100,12 +100,37 @@ func Parse(input string) (*Query, error) {
 
 	switch token.Type {
 	case lexer.TOKEN_CREATE:
-		query.Type = "create"
-
 		token = l.NextToken()
-		if token.Type != lexer.TOKEN_TABLE {
-			return nil, syntaxError("parse create table", "expected TABLE after CREATE")
+		if token.Type == lexer.TOKEN_IDENT && token.Value == "index" {
+			if token = l.NextToken(); token.Type != lexer.TOKEN_IDENT || token.Value != "on" {
+				return nil, syntaxError("parse create index", "expected ON after CREATE INDEX")
+			}
+			token = l.NextToken()
+			if token.Type != lexer.TOKEN_IDENT {
+				return nil, syntaxError("parse create index", "expected table name after ON")
+			}
+			query.Table = token.Value
+			if token = l.NextToken(); token.Type != lexer.TOKEN_LPAREN {
+				return nil, syntaxError("parse create index", "expected '(' after table name")
+			}
+			token = l.NextToken()
+			if token.Type != lexer.TOKEN_IDENT {
+				return nil, syntaxError("parse create index", "expected indexed column name")
+			}
+			query.Columns = []string{token.Value}
+			if token = l.NextToken(); token.Type != lexer.TOKEN_RPAREN {
+				return nil, syntaxError("parse create index", "expected ')' after indexed column")
+			}
+			if token = l.NextToken(); token.Type != lexer.TOKEN_EOF {
+				return nil, unexpectedToken("parse create index", token)
+			}
+			query.Type = "create_index"
+			return query, nil
 		}
+		if token.Type != lexer.TOKEN_TABLE {
+			return nil, syntaxError("parse create", "expected TABLE or INDEX after CREATE")
+		}
+		query.Type = "create"
 
 		token = l.NextToken()
 		if token.Type != lexer.TOKEN_IDENT {
