@@ -551,7 +551,7 @@
 - Regression coverage: nil, posting/free/invalid node types, over-capacity leaf/internal counts, and empty/full valid boundaries; existing key, RID, child, insert, split, delete, range, and validation tests exercise propagated errors.
 - Verification: full tests, build, vet, B-tree/table race tests, Windows and Solaris package test-binary cross-target checks, and `git diff --check` passed.
 - Limitations: native Solaris runtime coverage remains unavailable. Hosted CI for this uncommitted change will run after push.
-- Commit: pending.
+- Commit: `b1ea467` (`Validate B-tree key count reads`).
 
 ## Prioritized backlog
 
@@ -562,4 +562,4 @@
 
 ## Next action
 
-Next task: finish verification and commit the checked `GetNumKeys` migration, then add bounded fuzz coverage for malformed serialized B-tree pages. Count setters are committed at `c4c5612`; leaf/posting links at `dca4a37`; parent pointers at `35a6a0c`. Hosted run `40273870120` passed Ubuntu and Windows for `35a6a0c`. Preserve the supplied untracked `AGENTS.md`. Separately continue seeking a usable Solaris/illumos runtime; Windows native storage tests pass in hosted CI.
+Next task: add bounded fuzz coverage for malformed serialized B-tree pages. Count setters are committed at `c4c5612`; leaf/posting links at `dca4a37`; parent pointers at `35a6a0c`; checked key-count reads at `b1ea467`. Hosted run `40273870120` passed Ubuntu and Windows for `35a6a0c`; CI for `b1ea467` is pending. Preserve the supplied untracked `AGENTS.md`. Separately continue seeking a usable Solaris/illumos runtime; Windows native storage tests pass in hosted CI.
