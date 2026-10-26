@@ -282,6 +282,45 @@ func TestBTreePointerSettersCheckPageType(t *testing.T) {
 	}
 }
 
+func TestBTreeParentAccessorsValidatePageType(t *testing.T) {
+	var nilPage *BTreePage
+	if _, err := nilPage.ParentID(); err == nil {
+		t.Fatal("ParentID accepted nil page")
+	}
+	if _, err := nilPage.GetParentID(); err == nil {
+		t.Fatal("GetParentID accepted nil page")
+	}
+	if err := nilPage.SetParentID(9); err == nil {
+		t.Fatal("SetParentID accepted nil page")
+	}
+	for _, page := range []*BTreePage{
+		{ID: 1, Data: [PAGE_SIZE]byte{byte(PostingNode)}},
+		{ID: 2, Data: [PAGE_SIZE]byte{byte(FreeNode)}},
+		{ID: 3, Data: [PAGE_SIZE]byte{0xff}},
+	} {
+		if _, err := page.ParentID(); err == nil {
+			t.Fatalf("ParentID accepted node type %d", page.NodeType())
+		}
+		before := page.Data
+		if err := page.SetParentID(9); err == nil {
+			t.Fatalf("SetParentID accepted node type %d", page.NodeType())
+		}
+		if page.Data != before {
+			t.Fatal("failed SetParentID mutated page")
+		}
+	}
+	for _, init := range []func(*BTreePage){InitLeafPage, InitInternalPage} {
+		page := &BTreePage{ID: 4}
+		init(page)
+		if err := page.SetParentID(17); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := page.ParentID(); err != nil || got != 17 {
+			t.Fatalf("ParentID = %d, %v; want 17", got, err)
+		}
+	}
+}
+
 func TestBTreeGetChildValidatesPageAndIndex(t *testing.T) {
 	var nilPage *BTreePage
 	if _, err := nilPage.GetChild(0); err == nil {
@@ -1211,9 +1250,13 @@ func TestInvariantsAfterInsert(t *testing.T) {
 						t.Errorf("internal %d child %d: %v", pageID, childID, err)
 						continue
 					}
-					if child.GetParentID() != pageID {
-						t.Errorf("parent mismatch: page %d (parent %d) thinks parent is %d",
-							childID, page.GetParentID(), pageID)
+					parentID, err := child.GetParentID()
+					if err != nil {
+						t.Errorf("read parent for page %d: %v", childID, err)
+						continue
+					}
+					if parentID != pageID {
+						t.Errorf("parent mismatch: page %d has parent %d, expected %d", childID, parentID, pageID)
 					}
 				}
 			}

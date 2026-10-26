@@ -101,9 +101,14 @@ func (b *BTreePage) NodeType() NodeType {
 	return NodeType(b.Data[0])
 }
 
-func (b *BTreePage) ParentID() uint32 {
-	id := binary.LittleEndian.Uint32(b.Data[3:7])
-	return id
+func (b *BTreePage) ParentID() (uint32, error) {
+	if b == nil {
+		return 0, fmt.Errorf("get parent page ID: nil page")
+	}
+	if b.NodeType() != LeafNode && b.NodeType() != InternalNode {
+		return 0, fmt.Errorf("get parent page ID from page %d: expected leaf or internal node, got %d", b.ID, b.NodeType())
+	}
+	return binary.LittleEndian.Uint32(b.Data[3:7]), nil
 }
 
 func (b *BTreePage) findChild(key uint64) (uint32, error) {
@@ -364,14 +369,19 @@ func (b *BTreePage) SetNumKeys(n uint16) error {
 	return nil
 }
 
-func (b *BTreePage) GetParentID() uint32 {
-	id := binary.LittleEndian.Uint32(b.Data[3:7])
-	return id
+func (b *BTreePage) GetParentID() (uint32, error) {
+	return b.ParentID()
 }
 
-func (b *BTreePage) SetParentID(n uint32) {
-
+func (b *BTreePage) SetParentID(n uint32) error {
+	if b == nil {
+		return fmt.Errorf("set parent page ID: nil page")
+	}
+	if b.NodeType() != LeafNode && b.NodeType() != InternalNode {
+		return fmt.Errorf("set parent page ID on page %d: expected leaf or internal node, got %d", b.ID, b.NodeType())
+	}
 	binary.LittleEndian.PutUint32(b.Data[3:7], n)
+	return nil
 }
 
 func (b *BTreePage) NextLeaf() (uint32, error) {

@@ -197,8 +197,12 @@ func OpenIndex(tableName, colName string) (*Index, error) {
 	if root.NodeType() != LeafNode && root.NodeType() != InternalNode {
 		return openError(fmt.Errorf("root page %d has invalid node type %d", rootPageID, root.NodeType()))
 	}
-	if root.ParentID() != 0 {
-		return openError(fmt.Errorf("root page %d has parent page %d", rootPageID, root.ParentID()))
+	rootParentID, err := root.ParentID()
+	if err != nil {
+		return openError(fmt.Errorf("read root page %d parent: %w", rootPageID, err))
+	}
+	if rootParentID != 0 {
+		return openError(fmt.Errorf("root page %d has parent page %d", rootPageID, rootParentID))
 	}
 	if root.GetNumKeys() > MaxKeysPerLeaf && root.NodeType() == LeafNode || root.GetNumKeys() > MaxKeysPerInternal && root.NodeType() == InternalNode {
 		return openError(fmt.Errorf("root page %d has invalid key count %d", rootPageID, root.GetNumKeys()))
@@ -429,7 +433,13 @@ func (ind *Index) SplitLeafPage(p *BTreePage) (newPage *BTreePage, ascendKey uin
 		return nil, 0, err
 	}
 
-	newPage.SetParentID(p.GetParentID())
+	parentID, err := p.GetParentID()
+	if err != nil {
+		return nil, 0, err
+	}
+	if err := newPage.SetParentID(parentID); err != nil {
+		return nil, 0, err
+	}
 
 	if err := p.moveHalfKeysToLeaf(newPage); err != nil {
 		return nil, 0, err
@@ -445,8 +455,6 @@ func (ind *Index) SplitLeafPage(p *BTreePage) (newPage *BTreePage, ascendKey uin
 	if err := p.SetNextLeaf(newPage.ID); err != nil {
 		return nil, 0, err
 	}
-
-	newPage.SetParentID(p.GetParentID())
 
 	ascendKey, err = newPage.GetKey(0)
 	if err != nil {
@@ -590,8 +598,12 @@ func (ind *Index) CreateNewRoot(oldRoot *BTreePage, ascendKey uint64, newPage *B
 		return nil, err
 	}
 
-	oldRoot.SetParentID(newRoot.ID)
-	newPage.SetParentID(newRoot.ID)
+	if err := oldRoot.SetParentID(newRoot.ID); err != nil {
+		return nil, err
+	}
+	if err := newPage.SetParentID(newRoot.ID); err != nil {
+		return nil, err
+	}
 
 	err = ind.WritePage(oldRoot)
 
@@ -646,7 +658,9 @@ func (ind *Index) InsertIntoInternalPage(parent *BTreePage, key uint64, childPag
 		return 0, nil, err
 	}
 
-	childPage.SetParentID(parent.ID)
+	if err := childPage.SetParentID(parent.ID); err != nil {
+		return 0, nil, err
+	}
 
 	if err := parent.InsertIntoInternalAt(insertPos, key, childPageID, numKeys); err != nil {
 		return 0, nil, err
@@ -686,7 +700,13 @@ func (ind *Index) SplitInternalPage(p *BTreePage) (ascendKey uint64, newPage *BT
 		return 0, nil, err
 	}
 
-	newPage.SetParentID(p.GetParentID())
+	parentID, err := p.GetParentID()
+	if err != nil {
+		return 0, nil, err
+	}
+	if err := newPage.SetParentID(parentID); err != nil {
+		return 0, nil, err
+	}
 
 	err = ind.WritePage(p)
 
@@ -712,7 +732,9 @@ func (ind *Index) SplitInternalPage(p *BTreePage) (ascendKey uint64, newPage *BT
 			return 0, nil, err
 		}
 
-		childPage.SetParentID(newPage.ID)
+		if err := childPage.SetParentID(newPage.ID); err != nil {
+			return 0, nil, err
+		}
 		err = ind.WritePage(childPage)
 
 		if err != nil {
@@ -785,9 +807,17 @@ func (ind *Index) Refresh() error {
 	}
 	fresh := &Index{file: ind.file, numPages: numPages}
 	root, err := fresh.GetPage(rootPageID)
-	if err != nil || (root.NodeType() != LeafNode && root.NodeType() != InternalNode) || root.ParentID() != 0 {
+	if err != nil {
+		return fmt.Errorf("refresh index %q root page %d: %w", ind.path, rootPageID, err)
+	}
+	if root.NodeType() != LeafNode && root.NodeType() != InternalNode {
+		err = fmt.Errorf("invalid root node type %d", root.NodeType())
+		return fmt.Errorf("refresh index %q root page %d: %w", ind.path, rootPageID, err)
+	}
+	rootParentID, err := root.ParentID()
+	if err != nil || rootParentID != 0 {
 		if err == nil {
-			err = fmt.Errorf("invalid root node type %d or parent %d", root.NodeType(), root.ParentID())
+			err = fmt.Errorf("invalid root parent %d", rootParentID)
 		}
 		return fmt.Errorf("refresh index %q root page %d: %w", ind.path, rootPageID, err)
 	}
@@ -1442,7 +1472,11 @@ func (ind *Index) subtreeMin(pageID uint32) (uint64, error) {
 }
 
 func (ind *Index) rebalanceLeaf(leaf *BTreePage) error {
-	parent, err := ind.GetPage(leaf.ParentID())
+	parentID, err := leaf.ParentID()
+	if err != nil {
+		return err
+	}
+	parent, err := ind.GetPage(parentID)
 	if err != nil {
 		return err
 	}
@@ -1602,7 +1636,9 @@ func (ind *Index) rebalanceInternal(node *BTreePage) error {
 			if err != nil {
 				return err
 			}
-			child.SetParentID(0)
+			if err := child.SetParentID(0); err != nil {
+				return err
+			}
 			if err := ind.WritePage(child); err != nil {
 				return err
 			}
@@ -1620,7 +1656,11 @@ func (ind *Index) rebalanceInternal(node *BTreePage) error {
 		return ind.WritePage(node)
 	}
 
-	parent, err := ind.GetPage(node.ParentID())
+	parentID, err := node.ParentID()
+	if err != nil {
+		return err
+	}
+	parent, err := ind.GetPage(parentID)
 	if err != nil {
 		return err
 	}
@@ -1674,7 +1714,9 @@ func (ind *Index) rebalanceInternal(node *BTreePage) error {
 			if err != nil {
 				return err
 			}
-			moved.SetParentID(node.ID)
+			if err := moved.SetParentID(node.ID); err != nil {
+				return err
+			}
 			if err := ind.WritePage(moved); err != nil {
 				return err
 			}
@@ -1723,7 +1765,9 @@ func (ind *Index) rebalanceInternal(node *BTreePage) error {
 			if err != nil {
 				return err
 			}
-			moved.SetParentID(node.ID)
+			if err := moved.SetParentID(node.ID); err != nil {
+				return err
+			}
 			if err := ind.WritePage(moved); err != nil {
 				return err
 			}
@@ -1760,7 +1804,9 @@ func (ind *Index) rebalanceInternal(node *BTreePage) error {
 			if err != nil {
 				return err
 			}
-			child.SetParentID(left.ID)
+			if err := child.SetParentID(left.ID); err != nil {
+				return err
+			}
 			if err := ind.WritePage(child); err != nil {
 				return err
 			}
@@ -1804,7 +1850,9 @@ func (ind *Index) rebalanceInternal(node *BTreePage) error {
 		if err != nil {
 			return err
 		}
-		child.SetParentID(node.ID)
+		if err := child.SetParentID(node.ID); err != nil {
+			return err
+		}
 		if err := ind.WritePage(child); err != nil {
 			return err
 		}
@@ -1976,8 +2024,12 @@ func (ind *Index) Validate() error {
 		return fmt.Errorf("root page ID is 0, index is empty")
 	}
 
-	if rootPage.ParentID() != 0 {
-		return fmt.Errorf("root page has non-zero parent ID: %d", rootPage.ParentID())
+	rootParentID, err := rootPage.ParentID()
+	if err != nil {
+		return fmt.Errorf("read root page parent: %w", err)
+	}
+	if rootParentID != 0 {
+		return fmt.Errorf("root page has non-zero parent ID: %d", rootParentID)
 	}
 
 	err = ind.validateNode(rootPage, 0, math.MaxUint64, 0, 0, visitedPages)
@@ -2097,8 +2149,12 @@ func (ind *Index) validateNode(node *BTreePage, minKey, maxKey uint64, level int
 		return fmt.Errorf("node ID %d is out of bounds (numPages=%d)", node.ID, ind.numPages)
 	}
 
-	if node.ParentID() != parentPageID {
-		return fmt.Errorf("node %d has incorrect parent ID: expected %d, got %d", node.ID, parentPageID, node.ParentID())
+	nodeParentID, err := node.ParentID()
+	if err != nil {
+		return err
+	}
+	if nodeParentID != parentPageID {
+		return fmt.Errorf("node %d has incorrect parent ID: expected %d, got %d", node.ID, parentPageID, nodeParentID)
 	}
 
 	if visitedPages[node.ID] != -1 {
