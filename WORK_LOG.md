@@ -282,12 +282,21 @@
 - Limitations: SELECT uses an exclusive table lock, so readers serialize with each other as well as writers. Direct pager access and `ValidateIndexes` do not acquire that lock. Native Windows/Solaris runtime behavior remains unverified.
 - Commit: `c1bf366` (`Add SQL secondary index removal`).
 
+### Inject index-removal filesystem failures
+
+- Priority: storage lifecycle verification. The catalog-first drop order was structurally safe, but unlink and directory-sync errors had no deterministic regression coverage.
+- Changes: routed index removal through an internal filesystem-operation seam and added tests for unlink failure and post-unlink directory-sync failure. The tests confirm that reopen ignores the unlisted orphan or missing file and scans correctly; index recreation also replaces an orphan safely.
+- Environment assessment: Docker is available only for Linux (`docker info` reports `linux x86_64`); no Windows/Solaris images are present. QEMU is installed but no guest images or boot setup are available. Native runtime testing on those targets therefore remains unavailable here.
+- Verification: targeted failure-injection tests, full `GOCACHE=/tmp/goDB-gocache go test ./...`, build, vet, race tests for table/WAL/B+ tree/pager, Windows and Solaris cross-builds, and `git diff --check` passed.
+- Limitations: injected tests verify application recovery semantics on Linux, not each target filesystem's actual unlink and directory-sync guarantees.
+- Commit: pending.
+
 ## Prioritized backlog
 
-1. **Run storage durability tests on Windows and Solaris.** Creation, WAL, table/index lifecycle, and directory sync have runtime verification only on Linux; both targets are cross-build-only so far. Solaris uses a process-local lock fallback. Dependencies: native or emulated test environments. Risks: directory-sync, rename, unlink, and lock behavior differs; cross-builds do not prove power-loss guarantees. Acceptance: run table/index creation and removal, interrupted-create recovery, WAL begin/rollback/recovery, and lock tests on each OS; document unsupported semantics or return clear errors if required primitives fail. Tests needed: native runtime coverage of those paths on Windows and Solaris.
+1. **Run storage durability tests on Windows and Solaris.** Creation, WAL, table/index lifecycle, and directory sync have runtime verification only on Linux; this host has no Windows/Solaris runtime or guest images. Solaris uses a process-local lock fallback. Dependencies: native or emulated test environments. Risks: directory-sync, rename, unlink, and lock behavior differs; cross-builds and injected Linux failures do not prove power-loss guarantees. Acceptance: run table/index creation and removal, interrupted-create recovery, WAL begin/rollback/recovery, and lock tests on each OS; document unsupported semantics or return clear errors if required primitives fail. Tests needed: native runtime coverage of those paths on Windows and Solaris.
 2. **Design TEXT secondary-key encoding.** Current index pages and posting APIs accept `uint64`; converting arbitrary text with a hash would introduce collisions and ordering surprises. Choose an exact encoding or a separate key representation before text index support. Acceptance: exact equality semantics without collision-based false positives, documented ordering, and tested persistence compatibility. Tests needed: empty/long text, Unicode byte sequences, collision cases if hashing is used, reopen, and duplicate postings.
 3. **Measure and improve indexed query cost.** The current benchmark suite covers primary-index lookups but not non-unique posting chains or the exclusive SELECT lock. Add benchmarks before choosing a finer-grained read-lock design. Acceptance: reproducible indexed versus scan measurements across cardinalities and duplicate distributions. Tests/benchmarks needed: low/high selectivity, multi-page posting chains, concurrent read workloads, and allocation counts.
 
 ## Next action
 
-Next task: investigate available native or emulated Windows/Solaris test environments and run the storage lifecycle suite where possible. If none are available, add portable test hooks for rename/unlink/directory-sync fault paths and document the remaining runtime gap. Then benchmark duplicate-index queries and SELECT lock contention. Preserve the supplied untracked `AGENTS.md`.
+Next task: benchmark duplicate-index queries and SELECT lock contention to determine whether exclusive read locking needs redesign. Continue seeking a Windows/Solaris runtime for durability tests. Preserve the supplied untracked `AGENTS.md`.

@@ -170,6 +170,10 @@ func (t *Table) CreateIndex(column string) error {
 // before unlinking the index file. A crash after the bit is cleared leaves
 // only an ignored orphan, never a catalog entry pointing to a missing file.
 func (t *Table) DropIndex(column string) error {
+	return t.dropIndex(column, os.Remove, syncDirectory)
+}
+
+func (t *Table) dropIndex(column string, removeFile func(string) error, syncDir func(string) error) error {
 	if t == nil || t.Pager == nil {
 		return fmt.Errorf("drop index: table is not open")
 	}
@@ -231,10 +235,10 @@ func (t *Table) DropIndex(column string) error {
 	closeErr := index.Close()
 	delete(t.Indexes, canonical)
 	path := btree.IndexPath(t.Name, canonical)
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := removeFile(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return errors.Join(closeErr, fmt.Errorf("remove index file %q: %w", path, err))
 	}
-	if err := syncDirectory(filepath.Dir(path)); err != nil {
+	if err := syncDir(filepath.Dir(path)); err != nil {
 		return errors.Join(closeErr, fmt.Errorf("sync index removal for %q: %w", canonical, err))
 	}
 	if closeErr != nil {
