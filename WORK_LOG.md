@@ -567,7 +567,7 @@
 - Changes: added `FuzzIndexValidateSmallImagesDoNotPanic` using a four-page temporary index image with valid leaf/free-list, invalid-root, and cyclic-posting seeds. A compact 32-byte lane per page lets mutations explore node headers, links, and the first entry while keeping per-input traversal bounded.
 - Verification: seed corpus passed; a 10-second run completed 233,653 executions and found 18 additional coverage-interesting inputs without a panic. Full tests, build, vet, B-tree/table race tests, Windows/Solaris test-binary cross-target checks, and `git diff --check` passed.
 - Limitations: metadata decoding in `OpenIndex` and WAL record parsing/recovery are not fuzzed by this target. Native Solaris runtime coverage remains unavailable; hosted CI for this change will run after push.
-- Commit: pending.
+- Commit: `e605cf5` (`Fuzz cross-page B-tree validation`).
 
 ## Prioritized backlog
 
@@ -578,4 +578,4 @@
 
 ## Next action
 
-Next task: finish recording and committing the small index-image fuzzer, then assess a read-only WAL journal parser fuzzer. Count setters are committed at `c4c5612`; leaf/posting links at `dca4a37`; parent pointers at `35a6a0c`; checked key-count reads at `b1ea467`; page accessor fuzzing at `7dcf560`. Hosted run `40276156419` passed Ubuntu and Windows for `7dcf560`. Preserve the supplied untracked `AGENTS.md`. Separately continue seeking a usable Solaris/illumos runtime; Windows native storage tests pass in hosted CI.
+Next task: assess a read-only WAL journal parser fuzzer. Count setters are committed at `c4c5612`; leaf/posting links at `dca4a37`; parent pointers at `35a6a0c`; checked key-count reads at `b1ea467`; page accessor fuzzing at `7dcf560`; cross-page validation fuzzing at `e605cf5`. Hosted run `40276156419` passed Ubuntu and Windows for `7dcf560`; CI for `e605cf5` is pending. Preserve the supplied untracked `AGENTS.md`. Separately continue seeking a usable Solaris/illumos runtime; Windows native storage tests pass in hosted CI.
