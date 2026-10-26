@@ -210,6 +210,15 @@
 - Verification: full `GOCACHE=/tmp/goDB-gocache go test ./...` and `git diff --check` passed.
 - Commit: `9799c27` (`Remove obsolete row mutation TODOs`).
 
+### Make pager page I/O safe for concurrent offsets
+
+- Priority: read correctness and storage API robustness. `ReadPage` and `WritePage` used `Seek` plus sequential I/O on a shared descriptor; concurrent calls could move the descriptor between operations and read or write the wrong page. Large page IDs could also overflow the signed file offset and wrap to an unrelated location.
+- Changes: switched page reads and writes to offset-based `ReadAt`/`WriteAt` and added a checked page-ID-to-offset conversion that rejects negative and overflowing IDs.
+- Regression coverage: concurrent readers verify every page boundary remains associated with the requested page; concurrent writers update distinct pages and verify the final page contents; maximum-int page IDs are rejected without changing file size.
+- Verification: pager concurrency/overflow tests passed 20 repeated runs; `GOCACHE=/tmp/goDB-gocache go test -race ./internal/pager ./internal/table`, full `GOCACHE=/tmp/goDB-gocache go test ./...`, `GOCACHE=/tmp/goDB-gocache go build ./...`, `GOCACHE=/tmp/goDB-gocache go vet ./...`, Windows and Solaris cross-builds, and `git diff --check` passed.
+- Limitations: offset-safe I/O does not provide snapshot isolation if a writer changes a page while a reader is reading it; the existing README limitation remains.
+- Commit: pending.
+
 ## Prioritized backlog
 
 1. **Define a typed value model and duplicate-key index representation.** Current columns have no types and the B+ tree maps unique `uint64` keys to one RID. This blocks useful secondary indexes because repeated arbitrary string values cannot be represented or compared with stable semantics. Dependencies: schema metadata/versioning and WAL-backed migration or a clear compatibility strategy. Risks: changing existing table/index formats and maintaining multiple RIDs per key. Acceptance: document supported types, key ordering, duplicate behavior, and migration compatibility before exposing secondary-index DDL; add format and recovery tests as part of implementation.
@@ -217,4 +226,4 @@
 
 ## Next action
 
-Next task: obtain runtime test coverage for Windows and Solaris storage semantics when those environments are available; until then, keep their status documented as cross-build-only. Then reassess typed values and schema compatibility before proposing secondary indexes. Preserve the supplied untracked `AGENTS.md`.
+Next task: assess a versioned typed-column metadata design with compatibility for existing tables, then continue seeking runtime Windows/Solaris durability coverage. Preserve the supplied untracked `AGENTS.md`.

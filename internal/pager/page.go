@@ -4,7 +4,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"sort"
 )
@@ -47,13 +46,11 @@ func (p *Page) Init() {
 }
 
 func WritePage(file *os.File, page *Page) error {
-	_, err := file.Seek(int64(page.ID)*PAGE_SIZE, 0)
-
+	offset, err := pageOffset(page.ID)
 	if err != nil {
-		return fmt.Errorf("write page %d: %w", page.ID, err)
+		return fmt.Errorf("write page %d: %w", page.ID, ErrInvalidPageID)
 	}
-
-	n, err := file.Write(page.Data[:])
+	n, err := file.WriteAt(page.Data[:], offset)
 
 	if err != nil {
 		return fmt.Errorf("write page %d: %w", page.ID, err)
@@ -67,19 +64,12 @@ func WritePage(file *os.File, page *Page) error {
 }
 
 func ReadPage(file *os.File, pageID int) ([]byte, error) {
-	if pageID < 0 {
+	offset, err := pageOffset(pageID)
+	if err != nil {
 		return nil, fmt.Errorf("read page %d: %w", pageID, ErrInvalidPageID)
 	}
-
-	_, err := file.Seek(int64(pageID)*PAGE_SIZE, 0)
-
-	if err != nil {
-		return nil, fmt.Errorf("read page %d: %w", pageID, err)
-	}
-
 	data := make([]byte, PAGE_SIZE)
-
-	n, err := io.ReadFull(file, data)
+	n, err := file.ReadAt(data, offset)
 
 	if err != nil {
 		return nil, fmt.Errorf("read page %d: %w", pageID, err)
@@ -89,6 +79,13 @@ func ReadPage(file *os.File, pageID int) ([]byte, error) {
 		return nil, fmt.Errorf("read page %d: %w (read %d of %d bytes)", pageID, ErrorReadingPage, n, PAGE_SIZE)
 	}
 	return data, nil
+}
+
+func pageOffset(pageID int) (int64, error) {
+	if pageID < 0 || uint64(pageID) > (uint64(1)<<63)/PAGE_SIZE-1 {
+		return 0, ErrInvalidPageID
+	}
+	return int64(pageID) * PAGE_SIZE, nil
 }
 
 func (p *Page) AddRow(data []byte) error {

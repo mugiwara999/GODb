@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
 	"testing"
 
 	"github.com/mugiwara999/goDB/internal/pager"
@@ -805,6 +806,131 @@ func FuzzPageAddRowRoundTrip(f *testing.F) {
 		}
 		assertPageInvariants(t, p, [][]byte{data}, nil)
 	})
+}
+
+func TestReadPageConcurrentOffsets(t *testing.T) {
+	const pageCount = 8
+	path := filepath.Join(t.TempDir(), "concurrent-read.bin")
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for pageID := 0; pageID < pageCount; pageID++ {
+		page := &pager.Page{ID: pageID}
+		for i := range page.Data {
+			page.Data[i] = byte(pageID + 1)
+		}
+		if err := pager.WritePage(file, page); err != nil {
+			_ = file.Close()
+			t.Fatalf("WritePage(%d): %v", pageID, err)
+		}
+	}
+
+	const readerCount = 8
+	const readsPerWorker = 500
+	start := make(chan struct{})
+	errs := make(chan error, readerCount)
+	var readers sync.WaitGroup
+	for worker := 0; worker < readerCount; worker++ {
+		readers.Add(1)
+		go func(worker int) {
+			defer readers.Done()
+			<-start
+			for i := 0; i < readsPerWorker; i++ {
+				pageID := (worker + i) % pageCount
+				data, err := pager.ReadPage(file, pageID)
+				if err != nil {
+					errs <- err
+					return
+				}
+				want := byte(pageID + 1)
+				if data[0] != want || data[len(data)-1] != want {
+					errs <- errors.New("concurrent ReadPage returned bytes from another page")
+					return
+				}
+			}
+		}(worker)
+	}
+	close(start)
+	readers.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+}
+
+func TestWritePageConcurrentOffsets(t *testing.T) {
+	const pageCount = 8
+	path := filepath.Join(t.TempDir(), "concurrent-write.bin")
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const writesPerWorker = 100
+	errs := make(chan error, pageCount)
+	var writers sync.WaitGroup
+	for pageID := 0; pageID < pageCount; pageID++ {
+		page := &pager.Page{ID: pageID}
+		for i := range page.Data {
+			page.Data[i] = byte(pageID + 1)
+		}
+		writers.Add(1)
+		go func(page *pager.Page) {
+			defer writers.Done()
+			for i := 0; i < writesPerWorker; i++ {
+				if err := pager.WritePage(file, page); err != nil {
+					errs <- err
+					return
+				}
+			}
+		}(page)
+	}
+	writers.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+	for pageID := 0; pageID < pageCount; pageID++ {
+		data, err := pager.ReadPage(file, pageID)
+		if err != nil {
+			t.Fatalf("ReadPage(%d): %v", pageID, err)
+		}
+		want := byte(pageID + 1)
+		if data[0] != want || data[len(data)-1] != want {
+			t.Fatalf("page %d has boundary bytes %d/%d, want %d", pageID, data[0], data[len(data)-1], want)
+		}
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+}
+
+func TestPageIORejectsOffsetOverflow(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "overflow.bin")
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+
+	maxInt := int(^uint(0) >> 1)
+	if err := pager.WritePage(file, &pager.Page{ID: maxInt}); !errors.Is(err, pager.ErrInvalidPageID) {
+		t.Fatalf("WritePage(max int) error = %v, want ErrInvalidPageID", err)
+	}
+	if _, err := pager.ReadPage(file, maxInt); !errors.Is(err, pager.ErrInvalidPageID) {
+		t.Fatalf("ReadPage(max int) error = %v, want ErrInvalidPageID", err)
+	}
+	info, err := file.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() != 0 {
+		t.Fatalf("overflowing page I/O changed file size to %d", info.Size())
+	}
 }
 
 func equalStrings(a, b []string) bool {
