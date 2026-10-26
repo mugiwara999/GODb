@@ -193,6 +193,15 @@
 - Limitations: runtime tests were available only on Linux. Cross-compilation proves the lock implementations build across the tested targets but does not validate directory-sync behavior or crash durability outside Linux.
 - Commit: `8983652` (`Restore Solaris build using fallback locks`).
 
+### Validate and canonicalize table schemas
+
+- Priority: schema correctness and safe storage paths. The storage API accepted duplicate names, the generated `id` name as a user column, SQL keywords, malformed identifiers, and embedded NULs. Duplicate names made column lookup inconsistent, while invalid table names could produce paths the SQL interface could not address.
+- Changes: `Create` and `Open` now accept only identifier tokens supported by the SQL lexer and normalize them to lowercase. Creation rejects duplicate columns (case-insensitively) and reserves `id` for the generated primary key before acquiring locks or creating files. README documents these constraints.
+- Regression coverage: invalid schemas including duplicate names, `id`, reserved words, whitespace, and NUL are rejected without leaving files; invalid/path-traversal table names are rejected by Create and Open; mixed-case table/column creation persists canonical lowercase metadata and reopens through a different table-name case.
+- Verification: targeted `GOCACHE=/tmp/goDB-gocache go test ./internal/table ./cmd`, full `GOCACHE=/tmp/goDB-gocache go test ./...`, `GOCACHE=/tmp/goDB-gocache go build ./...`, `GOCACHE=/tmp/goDB-gocache go vet ./...`, `GOCACHE=/tmp/goDB-gocache go test -race ./internal/table`, Windows and Solaris cross-builds, and `git diff --check` passed.
+- Limitations: validation is at the table API boundary; existing on-disk schemas created by older direct API calls with noncanonical names are not migrated.
+- Commit: pending.
+
 ## Prioritized backlog
 
 1. **Define a typed value model and duplicate-key index representation.** Current columns have no types and the B+ tree maps unique `uint64` keys to one RID. This blocks useful secondary indexes because repeated arbitrary string values cannot be represented or compared with stable semantics. Dependencies: schema metadata/versioning and WAL-backed migration or a clear compatibility strategy. Risks: changing existing table/index formats and maintaining multiple RIDs per key. Acceptance: document supported types, key ordering, duplicate behavior, and migration compatibility before exposing secondary-index DDL; add format and recovery tests as part of implementation.
@@ -200,4 +209,4 @@
 
 ## Next action
 
-Next task: obtain runtime test coverage for Windows and Solaris storage semantics when those environments are available; until then, keep their status documented as cross-build-only. Preserve the supplied untracked `AGENTS.md`.
+Next task: obtain runtime test coverage for Windows and Solaris storage semantics when those environments are available; until then, keep their status documented as cross-build-only. Then reassess typed values and schema compatibility before proposing secondary indexes. Preserve the supplied untracked `AGENTS.md`.

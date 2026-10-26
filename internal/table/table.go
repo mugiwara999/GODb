@@ -13,6 +13,7 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/mugiwara999/goDB/internal/btree"
 	"github.com/mugiwara999/goDB/internal/filelock"
+	"github.com/mugiwara999/goDB/internal/lexer"
 	"github.com/mugiwara999/goDB/internal/pager"
 	"github.com/mugiwara999/goDB/internal/wal"
 )
@@ -36,6 +37,11 @@ var (
 var createMarkerMagic = []byte("GODBCREATE1\n")
 
 func Open(name string) (*Table, error) {
+	var err error
+	name, err = canonicalIdentifier(name, "table")
+	if err != nil {
+		return nil, err
+	}
 	path, err := tablePath(name)
 	if err != nil {
 		return nil, fmt.Errorf("open table %q: %w", name, err)
@@ -185,10 +191,31 @@ func (t *Table) reopenAfterRollback() error {
 }
 
 func Create(name string, cols []string) (*Table, error) {
-	name = strings.ToLower(name)
+	var err error
+	name, err = canonicalIdentifier(name, "table")
+	if err != nil {
+		return nil, err
+	}
 	if len(cols) == 0 {
 		return nil, fmt.Errorf("create table %q: at least one column name is required", name)
 	}
+	canonicalCols := make([]string, 0, len(cols))
+	seenCols := make(map[string]struct{}, len(cols))
+	for _, col := range cols {
+		canonicalCol, err := canonicalIdentifier(col, "column")
+		if err != nil {
+			return nil, fmt.Errorf("create table %q: %w", name, err)
+		}
+		if canonicalCol == "id" {
+			return nil, fmt.Errorf("create table %q: column name %q is reserved for the generated primary key", name, col)
+		}
+		if _, exists := seenCols[canonicalCol]; exists {
+			return nil, fmt.Errorf("create table %q: duplicate column name %q", name, canonicalCol)
+		}
+		seenCols[canonicalCol] = struct{}{}
+		canonicalCols = append(canonicalCols, canonicalCol)
+	}
+	cols = canonicalCols
 
 	path, err := tablePath(name)
 	if err != nil {
@@ -216,6 +243,16 @@ func Create(name string, cols []string) (*Table, error) {
 		return nil, fmt.Errorf("create table %q: remove stale staging files: %w", name, err)
 	}
 	return createTableFiles(name, cols, path, nil)
+}
+
+func canonicalIdentifier(name, kind string) (string, error) {
+	canonical := strings.ToLower(name)
+	scanner := lexer.New(canonical)
+	token := scanner.NextToken()
+	if token.Type != lexer.TOKEN_IDENT || token.Value != canonical || scanner.NextToken().Type != lexer.TOKEN_EOF {
+		return "", fmt.Errorf("invalid %s name %q", kind, name)
+	}
+	return canonical, nil
 }
 
 // createTableFiles assumes the caller holds the table lock and has checked

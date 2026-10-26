@@ -53,6 +53,92 @@ func TestCreateRefusesToOverwriteExistingTable(t *testing.T) {
 	}
 }
 
+func TestCreateRejectsAmbiguousOrUnaddressableSchema(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cols []string
+	}{
+		{name: "generated primary key name", cols: []string{"id"}},
+		{name: "case-insensitive duplicate", cols: []string{"Name", "name"}},
+		{name: "reserved keyword", cols: []string{"where"}},
+		{name: "invalid identifier", cols: []string{"display name"}},
+		{name: "embedded NUL", cols: []string{"na\x00me"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dataDir := filepath.Join(t.TempDir(), "data")
+			if err := os.MkdirAll(dataDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("DATA_DIR", dataDir)
+			if _, err := Create("invalid_schema", tc.cols); err == nil {
+				t.Fatalf("Create(%q) succeeded, want schema validation error", tc.cols)
+			}
+			entries, err := os.ReadDir(dataDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(entries) != 0 {
+				t.Fatalf("Create left files for rejected schema: %v", entries)
+			}
+		})
+	}
+}
+
+func TestCreateAndOpenRejectUnaddressableTableNames(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "data")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DATA_DIR", dataDir)
+	for _, name := range []string{"../escape", "select", "table name", "bad\x00name"} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := Create(name, []string{"value"}); err == nil {
+				t.Fatalf("Create(%q) succeeded, want invalid identifier error", name)
+			}
+			if _, err := Open(name); err == nil {
+				t.Fatalf("Open(%q) succeeded, want invalid identifier error", name)
+			}
+		})
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(dataDir), "escape.bin")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("invalid table name created a file outside DATA_DIR (stat error %v)", err)
+	}
+}
+
+func TestCreateAndOpenCanonicalizeIdentifiers(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "data")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DATA_DIR", dataDir)
+	tbl, err := Create("Users", []string{"Name"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if got := tbl.GetColumns(); len(got) != 2 || got[0] != "id" || got[1] != "name" {
+		t.Fatalf("GetColumns() = %q, want [id name]", got)
+	}
+	if err := tbl.Insert([]string{"Ada"}); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := tbl.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	reopened, err := Open("USERS")
+	if err != nil {
+		t.Fatalf("Open with different identifier case: %v", err)
+	}
+	defer reopened.Close()
+	rows, err := reopened.Select([]string{"name"}, nil)
+	if err != nil {
+		t.Fatalf("Select with canonical column name: %v", err)
+	}
+	if len(rows) != 2 || rows[1][0] != "Ada" {
+		t.Fatalf("Select rows = %q, want header and Ada", rows)
+	}
+}
+
 func TestCreatePublicationFailureCleansPartialFiles(t *testing.T) {
 	for _, failureStep := range []string{"after_marker", "after_table_publish", "after_index_publish"} {
 		t.Run(failureStep, func(t *testing.T) {
