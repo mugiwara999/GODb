@@ -217,6 +217,84 @@ func TestOpenRejectsTypedSchemaWithNonUint64PrimaryID(t *testing.T) {
 	}
 }
 
+func TestCreateIndexCleansStagingFileWhenBackfillFindsCorruptRow(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "data")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DATA_DIR", dataDir)
+	tbl, err := CreateWithTypes("bad_index_backfill", []Column{{Name: "age", Type: ColumnUint64}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tbl.Close()
+	if err := tbl.Insert([]string{"42"}); err != nil {
+		t.Fatal(err)
+	}
+	page, err := tbl.Pager.GetPage(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original, err := page.GetRow(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := page.ReplaceRow(0, []byte("0\x00not-a-number\x00")); err != nil {
+		t.Fatal(err)
+	}
+	if err := tbl.Pager.Flush(page); err != nil {
+		t.Fatal(err)
+	}
+	if err := tbl.CreateIndex("age"); err == nil {
+		t.Fatal("CreateIndex succeeded with malformed UINT64 row")
+	}
+	indexPath := btree.IndexPath("bad_index_backfill", "age")
+	if _, err := os.Stat(indexPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("published index exists after failed backfill: %v", err)
+	}
+	if _, err := os.Stat(indexPath + ".build-tmp"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("staging index exists after failed backfill: %v", err)
+	}
+	if err := page.ReplaceRow(0, original); err != nil {
+		t.Fatal(err)
+	}
+	if err := tbl.Pager.Flush(page); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestOpenRejectsCorruptPresentSecondaryIndex(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "data")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DATA_DIR", dataDir)
+	tbl, err := CreateWithTypes("corrupt_secondary", []Column{{Name: "age", Type: ColumnUint64}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tbl.CreateIndex("age"); err != nil {
+		t.Fatalf("CreateIndex: %v", err)
+	}
+	if err := tbl.Close(); err != nil {
+		t.Fatal(err)
+	}
+	indexFile, err := os.OpenFile(btree.IndexPath("corrupt_secondary", "age"), os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := indexFile.WriteAt([]byte{0xff}, btree.PAGE_SIZE); err != nil {
+		_ = indexFile.Close()
+		t.Fatal(err)
+	}
+	if err := indexFile.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open("corrupt_secondary"); err == nil {
+		t.Fatal("Open ignored a corrupt present secondary index")
+	}
+}
+
 func TestCreatePublicationFailureCleansPartialFiles(t *testing.T) {
 	for _, failureStep := range []string{"after_marker", "after_table_publish", "after_index_publish"} {
 		t.Run(failureStep, func(t *testing.T) {

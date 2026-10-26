@@ -96,17 +96,34 @@ func openTable(name, path string) (*Table, error) {
 
 	idxs := make(map[string]*btree.Index)
 
-	for _, col := range cols {
-		idx, err := btree.OpenIndex(name, col)
-		if err != nil {
+	for i, col := range cols {
+		if i > 0 && colTypes[i] != pager.ColumnTypeUint64 {
+			continue
+		}
+		indexPath := btree.IndexPath(name, col)
+		if _, statErr := os.Stat(indexPath); errors.Is(statErr, os.ErrNotExist) {
 			if col == "id" {
 				for _, opened := range idxs {
 					_ = opened.Close()
 				}
 				_ = pg.Close()
-				return nil, fmt.Errorf("open table %q primary index: %w", name, err)
+				return nil, fmt.Errorf("open table %q primary index: %w", name, statErr)
 			}
 			continue
+		} else if statErr != nil {
+			for _, opened := range idxs {
+				_ = opened.Close()
+			}
+			_ = pg.Close()
+			return nil, fmt.Errorf("inspect table %q index %q: %w", name, col, statErr)
+		}
+		idx, err := btree.OpenIndex(name, col)
+		if err != nil {
+			for _, opened := range idxs {
+				_ = opened.Close()
+			}
+			_ = pg.Close()
+			return nil, fmt.Errorf("open table %q index %q: %w", name, col, err)
 		}
 		idxs[col] = idx
 	}
@@ -146,10 +163,8 @@ func (t *Table) mutate(fn func() error) error {
 	if err := t.Pager.Refresh(); err != nil {
 		return fmt.Errorf("refresh table %q before mutation: %w", t.Name, err)
 	}
-	for _, idx := range t.Indexes {
-		if err := idx.Refresh(); err != nil {
-			return fmt.Errorf("refresh table %q index before mutation: %w", t.Name, err)
-		}
+	if err := t.refreshIndexes(); err != nil {
+		return fmt.Errorf("refresh table %q indexes before mutation: %w", t.Name, err)
 	}
 	if t.lastID, err = t.Pager.LastID(); err != nil {
 		return fmt.Errorf("refresh table %q last ID: %w", t.Name, err)

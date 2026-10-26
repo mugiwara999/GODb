@@ -105,3 +105,94 @@ func (t *Table) ValidatePrimaryIndex() error {
 	}
 	return nil
 }
+
+// ValidateIndexes checks each open secondary UINT64 index against the live
+// rows, including both missing and stale key/RID associations.
+func (t *Table) ValidateIndexes() error {
+	if err := t.ValidatePrimaryIndex(); err != nil {
+		return err
+	}
+	type rowLocation struct {
+		page uint32
+		slot uint16
+	}
+	for columnIndex := 1; columnIndex < len(t.cols); columnIndex++ {
+		column := t.cols[columnIndex]
+		index := t.Indexes[column]
+		if index == nil {
+			continue
+		}
+		if err := index.Validate(); err != nil {
+			return fmt.Errorf("validate secondary index %q for table %q: %w", column, t.Name, err)
+		}
+		expected := make(map[uint64]map[rowLocation]struct{})
+		rowIt := t.Pager.RowIterator()
+		for {
+			data, err := rowIt.Next()
+			if err != nil {
+				return fmt.Errorf("validate secondary index %q: scan rows: %w", column, err)
+			}
+			if data == nil {
+				break
+			}
+			row, err := t.decodeRow(data)
+			if err != nil {
+				return fmt.Errorf("validate secondary index %q: corrupt row: %w", column, err)
+			}
+			key, err := strconv.ParseUint(row[columnIndex], 10, 64)
+			if err != nil {
+				return fmt.Errorf("validate secondary index %q: invalid key %q: %w", column, row[columnIndex], err)
+			}
+			info := rowIt.GetCurrentInfo()
+			location := rowLocation{page: uint32(info.PageID), slot: uint16(info.SlotID)}
+			if expected[key] == nil {
+				expected[key] = make(map[rowLocation]struct{})
+			}
+			expected[key][location] = struct{}{}
+		}
+
+		leaf, err := index.FindLeftMostLeaf()
+		if err != nil {
+			return fmt.Errorf("validate secondary index %q: find first leaf: %w", column, err)
+		}
+		visitedKeys := make(map[uint64]struct{})
+		for leaf != nil {
+			for i := 0; i < leaf.GetNumKeys(); i++ {
+				key := leaf.GetKey(i)
+				wanted, exists := expected[key]
+				if !exists {
+					return fmt.Errorf("validate secondary index %q: unexpected key %d", column, key)
+				}
+				if _, exists := visitedKeys[key]; exists {
+					return fmt.Errorf("validate secondary index %q: key %d appears more than once", column, key)
+				}
+				visitedKeys[key] = struct{}{}
+				got, err := index.FindAll(key)
+				if err != nil {
+					return fmt.Errorf("validate secondary index %q key %d: %w", column, key, err)
+				}
+				if len(got) != len(wanted) {
+					return fmt.Errorf("validate secondary index %q key %d has %d RIDs, expected %d", column, key, len(got), len(wanted))
+				}
+				for _, rid := range got {
+					location := rowLocation{page: rid.GetPageID(), slot: rid.GetSlotID()}
+					if _, exists := wanted[location]; !exists {
+						return fmt.Errorf("validate secondary index %q key %d has stale RID (%d,%d)", column, key, location.page, location.slot)
+					}
+				}
+			}
+			next := leaf.NextLeaf()
+			if next == 0 {
+				break
+			}
+			leaf, err = index.GetPage(next)
+			if err != nil {
+				return fmt.Errorf("validate secondary index %q: read leaf %d: %w", column, next, err)
+			}
+		}
+		if len(visitedKeys) != len(expected) {
+			return fmt.Errorf("validate secondary index %q has %d keys, expected %d", column, len(visitedKeys), len(expected))
+		}
+	}
+	return nil
+}

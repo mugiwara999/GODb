@@ -49,3 +49,60 @@ func TestMutationRollbackAfterPartialTableAndIndexWrites(t *testing.T) {
 		t.Fatalf("ValidatePrimaryIndex after rollback: %v", err)
 	}
 }
+
+func TestSecondaryIndexErrorRollsBackTableMutation(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "data")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DATA_DIR", dataDir)
+	tbl, err := CreateWithTypes("secondary_rollback", []Column{
+		{Name: "age", Type: ColumnUint64},
+		{Name: "name", Type: ColumnText},
+	})
+	if err != nil {
+		t.Fatalf("CreateWithTypes: %v", err)
+	}
+	defer tbl.Close()
+	if err := tbl.Insert([]string{"42", "Ada"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tbl.Insert([]string{"42", "Lin"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tbl.CreateIndex("age"); err != nil {
+		t.Fatal(err)
+	}
+	secondary := tbl.Indexes["age"]
+	_, leaf, err := secondary.FindLeaf(42)
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := leaf.GetRID(0)
+	posting, err := secondary.GetPage(marker.GetPageID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalPosting := posting.Data
+	posting.SetPostingCount(0)
+	if err := secondary.WritePage(posting); err != nil {
+		t.Fatal(err)
+	}
+	if err := tbl.Insert([]string{"42", "Grace"}); err == nil {
+		t.Fatal("Insert succeeded despite corrupt secondary posting page")
+	}
+	posting.Data = originalPosting
+	if err := tbl.Indexes["age"].WritePage(posting); err != nil {
+		t.Fatalf("restore secondary posting page: %v", err)
+	}
+	rows, err := tbl.Select([]string{"name"}, []ColEq{{ColIdx: 1, Value: "42"}})
+	if err != nil {
+		t.Fatalf("Select after rollback: %v", err)
+	}
+	if len(rows) != 3 || rows[1][0] != "Ada" || rows[2][0] != "Lin" {
+		t.Fatalf("rows after rollback = %q, want Ada and Lin", rows)
+	}
+	if err := tbl.ValidateIndexes(); err != nil {
+		t.Fatalf("ValidateIndexes after rollback: %v", err)
+	}
+}

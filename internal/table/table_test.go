@@ -1,6 +1,7 @@
 package table_test
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -266,6 +267,150 @@ func TestTypedRowCorruptionIsRejectedByReadersAndValidator(t *testing.T) {
 		if err := check.run(); err == nil || !strings.Contains(err.Error(), "corrupt row") {
 			t.Errorf("%s error = %v, want corrupt row error", check.name, err)
 		}
+	}
+}
+
+func TestTypedUint64SecondaryIndexTracksMutationsAndReopens(t *testing.T) {
+	setupTableTest(t)
+	tbl, err := table.CreateWithTypes("indexed_people", []table.Column{
+		{Name: "age", Type: table.ColumnUint64},
+		{Name: "name", Type: table.ColumnText},
+	})
+	if err != nil {
+		t.Fatalf("CreateWithTypes: %v", err)
+	}
+	if err := tbl.Insert([]string{"42", "Ada"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tbl.Insert([]string{"00042", "Grace"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tbl.Insert([]string{"50", "Lin"}); err != nil {
+		t.Fatal(err)
+	}
+	otherHandle, err := table.Open("indexed_people")
+	if err != nil {
+		t.Fatalf("Open second handle: %v", err)
+	}
+	defer otherHandle.Close()
+	if err := tbl.CreateIndex("AGE"); err != nil {
+		t.Fatalf("CreateIndex: %v", err)
+	}
+	if err := tbl.CreateIndex("age"); !errors.Is(err, table.ErrIndexExists) {
+		t.Fatalf("duplicate CreateIndex error = %v, want ErrIndexExists", err)
+	}
+	if err := tbl.CreateIndex("name"); err == nil {
+		t.Fatal("CreateIndex accepted TEXT column")
+	}
+	if err := tbl.CreateIndex("missing"); err == nil {
+		t.Fatal("CreateIndex accepted missing column")
+	}
+	if err := tbl.CreateIndex("id"); err == nil {
+		t.Fatal("CreateIndex accepted generated primary key")
+	}
+	if err := otherHandle.Insert([]string{"42", "Katherine"}); err != nil {
+		t.Fatalf("Insert from handle opened before index creation: %v", err)
+	}
+	rows, err := tbl.Select([]string{"age", "name"}, []table.ColEq{{ColIdx: 1, Value: "00042"}})
+	if err != nil {
+		t.Fatalf("indexed Select: %v", err)
+	}
+	if len(rows) != 4 {
+		t.Fatalf("indexed rows = %q, want header plus three age 42 rows", rows)
+	}
+	if err := tbl.Update([]table.ColEq{{ColIdx: 2, Value: "Ada"}}, []table.UpdateValue{{ColIdx: 1, Value: "00050"}}); err != nil {
+		t.Fatalf("Update indexed key: %v", err)
+	}
+	rows, err = tbl.Select([]string{"name"}, []table.ColEq{{ColIdx: 1, Value: "50"}})
+	if err != nil {
+		t.Fatalf("Select updated key: %v", err)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("rows for age 50 = %q, want header plus Lin and Ada", rows)
+	}
+	if err := tbl.Delete([]table.ColEq{{ColIdx: 2, Value: "Grace"}}); err != nil {
+		t.Fatalf("Delete indexed row: %v", err)
+	}
+	rows, err = tbl.Select([]string{"name"}, []table.ColEq{{ColIdx: 1, Value: "42"}})
+	if err != nil {
+		t.Fatalf("Select after delete: %v", err)
+	}
+	if len(rows) != 2 || rows[1][0] != "Katherine" {
+		t.Fatalf("remaining age 42 rows = %q, want only Katherine", rows)
+	}
+	if err := tbl.ValidateIndexes(); err != nil {
+		t.Fatalf("ValidateIndexes: %v", err)
+	}
+	if err := tbl.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := table.Open("indexed_people")
+	if err != nil {
+		t.Fatalf("Open after index creation: %v", err)
+	}
+	defer reopened.Close()
+	rows, err = reopened.Select([]string{"age", "name"}, []table.ColEq{{ColIdx: 1, Value: "50"}})
+	if err != nil {
+		t.Fatalf("indexed Select after reopen: %v", err)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("reopened age 50 rows = %q, want header plus two rows", rows)
+	}
+	if err := reopened.ValidateIndexes(); err != nil {
+		t.Fatalf("ValidateIndexes after reopen: %v", err)
+	}
+}
+
+func TestSecondaryIndexTracksRelocatedRows(t *testing.T) {
+	setupTableTest(t)
+	tbl, err := table.CreateWithTypes("indexed_relocation", []table.Column{
+		{Name: "code", Type: table.ColumnUint64},
+		{Name: "payload", Type: table.ColumnText},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tbl.Close()
+	for i := 0; i < 20; i++ {
+		if err := tbl.Insert([]string{strconv.Itoa(i % 2), strings.Repeat("x", 175)}); err != nil {
+			t.Fatalf("Insert(%d): %v", i, err)
+		}
+	}
+	if err := tbl.CreateIndex("code"); err != nil {
+		t.Fatalf("CreateIndex: %v", err)
+	}
+	before, err := tbl.Indexes["id"].Find(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tbl.Update([]table.ColEq{{ColIdx: 0, Value: "0"}}, []table.UpdateValue{{ColIdx: 2, Value: strings.Repeat("y", 3000)}}); err != nil {
+		t.Fatalf("Update with row relocation: %v", err)
+	}
+	after, err := tbl.Indexes["id"].Find(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.GetPageID() == after.GetPageID() {
+		t.Fatalf("row did not relocate: location remained page %d", before.GetPageID())
+	}
+	rows, err := tbl.Select([]string{"payload"}, []table.ColEq{{ColIdx: 1, Value: "0"}})
+	if err != nil {
+		t.Fatalf("indexed Select after relocation: %v", err)
+	}
+	if len(rows) != 11 {
+		t.Fatalf("indexed rows after relocation = %d, want header plus 10 rows", len(rows))
+	}
+	foundLarge := false
+	for _, row := range rows[1:] {
+		if row[0] == strings.Repeat("y", 3000) {
+			foundLarge = true
+		}
+	}
+	if !foundLarge {
+		t.Fatal("relocated row is missing from secondary-index results")
+	}
+	if err := tbl.ValidateIndexes(); err != nil {
+		t.Fatalf("ValidateIndexes after relocation: %v", err)
 	}
 }
 

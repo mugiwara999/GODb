@@ -265,7 +265,7 @@ The project contains a recursive validator that checks important B+ Tree invaria
 
 This validator is heavily used while developing the storage engine.
 
-`Table.ValidatePrimaryIndex` also checks that each live row has the correct ID-index entry and that every index entry points to a matching live row.
+`Table.ValidatePrimaryIndex` checks the generated ID index. `Table.ValidateIndexes` additionally checks every open secondary index against the live rows. The Go API supports `Table.CreateIndex("age")` for `UINT64` columns; it backfills existing rows, and equality filters use the index. The SQL subset does not yet include `CREATE INDEX`.
 
 ## SQL subset
 
@@ -308,7 +308,8 @@ Some features commonly found in production databases are not yet implemented:
 * SQL planner and optimizer
 * Snapshot isolation for reads during concurrent writes
 * Buffer pool
-* Secondary indexes
+* SQL `CREATE INDEX` syntax; the Go API currently creates `UINT64` secondary indexes
+* Secondary indexes over `TEXT` columns
 
 These are possible future additions.
 

@@ -211,6 +211,19 @@ func (t *Table) insert(values []string) error {
 		}
 		return indexErr
 	}
+	for columnIndex := 1; columnIndex < len(t.cols); columnIndex++ {
+		index := t.Indexes[t.cols[columnIndex]]
+		if index == nil {
+			continue
+		}
+		key, err := strconv.ParseUint(values[columnIndex], 10, 64)
+		if err != nil {
+			return fmt.Errorf("insert into table %q: invalid indexed value for column %q: %w", t.Name, t.cols[columnIndex], err)
+		}
+		if err := index.InsertDuplicate(key, uint32(lastPage.ID), uint16(slotID)); err != nil {
+			return fmt.Errorf("insert into secondary index %q: %w", t.cols[columnIndex], err)
+		}
+	}
 
 	return nil
 }
@@ -305,6 +318,59 @@ func (t *Table) Select(columns []string, colEquals []ColEq) ([][]string, error) 
 			return result, nil
 
 		}
+	}
+
+	for _, filter := range colEquals {
+		if filter.ColIdx == 0 {
+			continue
+		}
+		index := t.Indexes[t.cols[filter.ColIdx]]
+		if index == nil {
+			continue
+		}
+		key, err := strconv.ParseUint(filter.Value, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("select from table %q: invalid indexed value for column %q: %w", t.Name, t.cols[filter.ColIdx], err)
+		}
+		rids, err := index.FindAll(key)
+		if errors.Is(err, btree.ErrKeyNotFound) {
+			return result, nil
+		}
+		if err != nil {
+			return nil, fmt.Errorf("select from table %q index %q: %w", t.Name, t.cols[filter.ColIdx], err)
+		}
+		for _, rid := range rids {
+			page, err := t.Pager.GetPage(int(rid.GetPageID()))
+			if err != nil {
+				return nil, fmt.Errorf("select from table %q index %q points to invalid page %d: %w", t.Name, t.cols[filter.ColIdx], rid.GetPageID(), err)
+			}
+			rowData, err := page.GetRow(int(rid.GetSlotID()))
+			if err != nil {
+				return nil, fmt.Errorf("select from table %q index %q points to invalid row (%d,%d): %w", t.Name, t.cols[filter.ColIdx], rid.GetPageID(), rid.GetSlotID(), err)
+			}
+			row, err := t.decodeRow(rowData)
+			if err != nil {
+				return nil, fmt.Errorf("select from table %q: corrupt indexed row: %w", t.Name, err)
+			}
+			if row[filter.ColIdx] != filter.Value {
+				return nil, fmt.Errorf("select from table %q: stale index %q points to row with value %q", t.Name, t.cols[filter.ColIdx], row[filter.ColIdx])
+			}
+			match := true
+			for _, other := range colEquals {
+				if row[other.ColIdx] != other.Value {
+					match = false
+					break
+				}
+			}
+			if match {
+				res := make([]string, 0, len(colIdxs))
+				for _, idx := range colIdxs {
+					res = append(res, row[idx])
+				}
+				result = append(result, res)
+			}
+		}
+		return result, nil
 	}
 
 	rowIt := t.Pager.RowIterator()
@@ -406,6 +472,19 @@ func (t *Table) delete(filters []ColEq) error {
 			if err := index.Delete(id); err != nil {
 				return fmt.Errorf("delete from table %q primary index key %d: %w", t.Name, id, err)
 			}
+			for columnIndex := 1; columnIndex < len(t.cols); columnIndex++ {
+				secondary := t.Indexes[t.cols[columnIndex]]
+				if secondary == nil {
+					continue
+				}
+				key, err := strconv.ParseUint(row[columnIndex], 10, 64)
+				if err != nil {
+					return fmt.Errorf("delete from table %q: invalid indexed value for column %q: %w", t.Name, t.cols[columnIndex], err)
+				}
+				if err := secondary.DeleteRID(key, uint32(matchInfo.PageID), uint16(matchInfo.SlotID)); err != nil {
+					return fmt.Errorf("delete from secondary index %q: %w", t.cols[columnIndex], err)
+				}
+			}
 		}
 	}
 
@@ -437,6 +516,8 @@ func (t *Table) update(filters []ColEq, toUpdate []UpdateValue) error {
 		info   pager.RowItInfo
 		data   []byte
 		id     uint64
+		oldRow []string
+		newRow []string
 		oldRID *btree.RID
 	}
 	var changes []change
@@ -485,7 +566,10 @@ func (t *Table) update(filters []ColEq, toUpdate []UpdateValue) error {
 		if err != nil {
 			return fmt.Errorf("update table %q: corrupt row ID %q: %w", t.Name, row[0], err)
 		}
-		changes = append(changes, change{info: rowIt.GetCurrentInfo(), data: data, id: id})
+		changes = append(changes, change{
+			info: rowIt.GetCurrentInfo(), data: data, id: id,
+			oldRow: row, newRow: updated,
+		})
 	}
 
 	// Simulate replacements first so a later row that cannot be relocated does
@@ -534,6 +618,9 @@ func (t *Table) update(filters []ColEq, toUpdate []UpdateValue) error {
 			if err := t.Pager.Flush(page); err != nil {
 				return fmt.Errorf("update table %q page %d: %w", t.Name, c.info.PageID, err)
 			}
+			if err := t.maintainSecondaryIndexes(c.oldRow, c.newRow, uint32(c.info.PageID), uint16(c.info.SlotID), uint32(c.info.PageID), uint16(c.info.SlotID)); err != nil {
+				return fmt.Errorf("update table %q secondary indexes: %w", t.Name, err)
+			}
 			continue
 		} else if !errors.Is(err, pager.ErrPageFull) {
 			return fmt.Errorf("update table %q page %d slot %d: %w", t.Name, c.info.PageID, c.info.SlotID, err)
@@ -575,6 +662,9 @@ func (t *Table) update(filters []ColEq, toUpdate []UpdateValue) error {
 		}
 		if err := t.Pager.Flush(page); err != nil {
 			return fmt.Errorf("update table %q: flush old row tombstone: %w", t.Name, err)
+		}
+		if err := t.maintainSecondaryIndexes(c.oldRow, c.newRow, uint32(c.info.PageID), uint16(c.info.SlotID), uint32(destination.ID), 0); err != nil {
+			return fmt.Errorf("update table %q secondary indexes: %w", t.Name, err)
 		}
 	}
 
