@@ -396,7 +396,7 @@
 - Benchmark on Linux/amd64, 13th Gen Intel Core i5-13500H, `-benchtime=200ms -count=3 -cpu=1`: batch range iteration for 10,000 duplicate RIDs 1.52–1.93 ms/op and 872 KB/op; RID streaming 77–81 µs/op and 78.7 KB/op.
 - Verification: full tests, build, vet, race tests for table/pager/B+ tree/WAL/parser/lexer/CLI, Windows and Solaris cross-builds, duplicate-RID and range mutation benchmarks, and `git diff --check` passed.
 - Limitations: `RangeRIDIterator` does not retain a set of every RID to check duplicates across the full chain; mutation consumers detect duplicates in the bounded portion they use and then fall back to the table. `Table.SelectRange` continues to use the fully validating batch iterator and retains its large posting-list allocation behavior.
-- Commit: pending.
+- Commit: `4397ef5` (`Stream range mutation RIDs`).
 
 ## Prioritized backlog
 
