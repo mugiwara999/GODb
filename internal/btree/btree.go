@@ -295,12 +295,25 @@ func (b *BTreePage) GetNumKeys() int {
 	return numKeys
 }
 
-func (b *BTreePage) IncrementNumKeys() {
-
-	numKeys := int(binary.LittleEndian.Uint16(b.Data[1:3]))
-	numKeys++
-
-	binary.LittleEndian.PutUint16(b.Data[1:3], uint16(numKeys))
+func (b *BTreePage) IncrementNumKeys() error {
+	if b == nil {
+		return fmt.Errorf("increment key count: nil page")
+	}
+	maxKeys := 0
+	switch b.NodeType() {
+	case LeafNode:
+		maxKeys = MaxKeysPerLeaf
+	case InternalNode:
+		maxKeys = MaxKeysPerInternal
+	default:
+		return fmt.Errorf("increment key count on page %d: invalid node type %d", b.ID, b.NodeType())
+	}
+	numKeys := b.GetNumKeys()
+	if numKeys >= maxKeys {
+		return fmt.Errorf("increment key count on page %d: count %d reached maximum %d", b.ID, numKeys, maxKeys)
+	}
+	binary.LittleEndian.PutUint16(b.Data[1:3], uint16(numKeys+1))
+	return nil
 }
 
 func (b *BTreePage) SetNumKeys(n uint16) {

@@ -306,6 +306,57 @@ func TestBTreeGetChildValidatesPageAndIndex(t *testing.T) {
 	}
 }
 
+func TestIncrementNumKeysChecksNodeCapacity(t *testing.T) {
+	tests := []struct {
+		name string
+		page *BTreePage
+	}{
+		{name: "full leaf", page: func() *BTreePage { p := &BTreePage{}; InitLeafPage(p); p.SetNumKeys(uint16(MaxKeysPerLeaf)); return p }()},
+		{name: "full internal", page: func() *BTreePage {
+			p := &BTreePage{}
+			InitInternalPage(p)
+			p.SetNumKeys(uint16(MaxKeysPerInternal))
+			return p
+		}()},
+		{name: "corrupt leaf count", page: func() *BTreePage { p := &BTreePage{}; InitLeafPage(p); p.SetNumKeys(^uint16(0)); return p }()},
+		{name: "posting node", page: func() *BTreePage { p := &BTreePage{}; p.Data[0] = byte(PostingNode); return p }()},
+		{name: "invalid node type", page: &BTreePage{Data: [PAGE_SIZE]byte{0xff}}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			before := test.page.Data
+			if err := test.page.IncrementNumKeys(); err == nil {
+				t.Fatal("IncrementNumKeys accepted invalid page state")
+			}
+			if test.page.Data != before {
+				t.Fatal("failed IncrementNumKeys mutated page")
+			}
+		})
+	}
+	var nilPage *BTreePage
+	if err := nilPage.IncrementNumKeys(); err == nil {
+		t.Fatal("IncrementNumKeys accepted nil page")
+	}
+
+	for _, test := range []struct {
+		name string
+		init func(*BTreePage)
+		max  int
+	}{{name: "leaf", init: InitLeafPage, max: MaxKeysPerLeaf}, {name: "internal", init: InitInternalPage, max: MaxKeysPerInternal}} {
+		t.Run(test.name+" reaches capacity", func(t *testing.T) {
+			page := &BTreePage{}
+			test.init(page)
+			page.SetNumKeys(uint16(test.max - 1))
+			if err := page.IncrementNumKeys(); err != nil {
+				t.Fatalf("increment to capacity: %v", err)
+			}
+			if got := page.GetNumKeys(); got != test.max {
+				t.Fatalf("key count = %d, want %d", got, test.max)
+			}
+		})
+	}
+}
+
 func withIndex(t *testing.T, colName string, fn func(*Index)) {
 	t.Helper()
 	dataDir := filepath.Join(t.TempDir(), "data")

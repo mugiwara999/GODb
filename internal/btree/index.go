@@ -372,6 +372,9 @@ func (ind *Index) freePage(pageID uint32) error {
 func (ind *Index) InsertIntoLeafPage(p *BTreePage, key uint64, id RID) (uint64, *BTreePage, error) {
 	numKeys := p.GetNumKeys()
 	const maxLeafKeys = (PAGE_SIZE - 11) / 14
+	if numKeys >= maxLeafKeys {
+		return 0, nil, fmt.Errorf("insert key %d into full leaf page %d with %d keys", key, p.ID, numKeys)
+	}
 
 	insertPos := 0
 	for insertPos < numKeys {
@@ -390,7 +393,9 @@ func (ind *Index) InsertIntoLeafPage(p *BTreePage, key uint64, id RID) (uint64, 
 
 	p.InsertIntoLeafAt(insertPos, key, id, numKeys)
 
-	p.IncrementNumKeys()
+	if err := p.IncrementNumKeys(); err != nil {
+		return 0, nil, err
+	}
 
 	if p.GetNumKeys() >= maxLeafKeys {
 		newPage, ascendKey, err := ind.SplitLeafPage(p)
@@ -564,7 +569,9 @@ func (ind *Index) CreateNewRoot(oldRoot *BTreePage, ascendKey uint64, newPage *B
 		return nil, err
 	}
 	newRoot.InsertIntoInternalAt(0, ascendKey, newPage.ID, 0)
-	newRoot.IncrementNumKeys()
+	if err := newRoot.IncrementNumKeys(); err != nil {
+		return nil, err
+	}
 
 	oldRoot.SetParentID(newRoot.ID)
 	newPage.SetParentID(newRoot.ID)
@@ -600,6 +607,9 @@ func (ind *Index) CreateNewRoot(oldRoot *BTreePage, ascendKey uint64, newPage *B
 func (ind *Index) InsertIntoInternalPage(parent *BTreePage, key uint64, childPageID uint32) (uint64, *BTreePage, error) {
 	numKeys := parent.GetNumKeys()
 	const maxInternalKeys = (PAGE_SIZE - 11) / 12
+	if numKeys >= maxInternalKeys {
+		return 0, nil, fmt.Errorf("insert separator %d into full internal page %d with %d keys", key, parent.ID, numKeys)
+	}
 
 	insertPos := 0
 	for insertPos < numKeys {
@@ -623,7 +633,9 @@ func (ind *Index) InsertIntoInternalPage(parent *BTreePage, key uint64, childPag
 
 	parent.InsertIntoInternalAt(insertPos, key, childPageID, numKeys)
 
-	parent.IncrementNumKeys()
+	if err := parent.IncrementNumKeys(); err != nil {
+		return 0, nil, err
+	}
 
 	err = ind.WritePage(parent)
 	if err != nil {
