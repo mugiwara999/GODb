@@ -271,7 +271,7 @@
 - Regression coverage: v2-to-v3 round trip and WAL rollback; invalid ID/TEXT catalog flags; missing declared index rejection; orphan ignore/replacement; migration preserving a preexisting v2 secondary index; corrupt present index rejection; CLI and table secondary-index flows.
 - Verification: full `GOCACHE=/tmp/goDB-gocache go test ./...`, build, vet, race tests for pager/B+ tree/WAL/table, Windows and Solaris cross-builds, and `git diff --check` passed.
 - Limitations: the catalog has no `DROP INDEX` operation yet. If a process crashes before catalog commit, the complete published index remains an unlisted orphan and is ignored; recreation removes it safely. Native Windows/Solaris durability remains unverified.
-- Commit: pending.
+- Commit: `5d0e704` (`Persist secondary index catalog`).
 
 ## Prioritized backlog
 
