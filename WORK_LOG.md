@@ -89,13 +89,21 @@
 - Limitations: open-time checks validate the root and free-list head but do not recursively validate the whole tree, avoiding a full index scan on every open. Call `Validate` for a complete structural audit.
 - Commit: `0fff3fd` (`Validate B-tree metadata when opening indexes`).
 
+### Make B+ tree validation safe across concurrent indexes
+
+- Priority: verification reliability. `Validate` stored traversal levels in a package-global slice, so independent indexes validating at the same time could overwrite each other's state and race.
+- Changes: each `Validate` call now allocates its own visited-page state and passes it through recursive node validation. Other read-only traversal state was already local to the call.
+- Regression coverage: four indexes with different page counts and free-list shapes are validated concurrently and repeatedly. The targeted test passed with the race detector.
+- Verification: `GOCACHE=/tmp/goDB-gocache go test -race ./internal/btree -run TestValidateConcurrentIndexes -count=1` passed; full `GOCACHE=/tmp/goDB-gocache go test ./...`, `go build ./...`, `go vet ./...`, and `git diff --check` passed.
+- Limitations: this makes concurrent read-only validation safe across independent indexes. Concurrent mutation of an index while validating it is still unsupported and unsynchronized.
+- Commit: pending.
+
 ## Prioritized backlog
 
 1. **Add crash-safe table and index mutations.** Insert/update/delete write table pages, metadata, and indexes separately, and B+ tree rebalancing adds multi-page delete updates. A WAL or another recovery design is needed. Risks include defining log ordering and recovery for existing files. Acceptance: injected failures at each write boundary recover to a consistent table/index state after reopen. Tests should cover insert, update, delete, root collapse, and incomplete/corrupt log handling.
-2. **Make B+ tree validation safe for concurrent indexes.** `Validate` uses the package-global `visitedPages` slice, so validating separate indexes concurrently can race and overwrite traversal state. Acceptance: traversal state is local to each validation call and parallel validation of independent indexes passes `go test -race`. Tests should validate several indexes concurrently, including one with free pages.
-3. **Add SQL/parser integration tests and usability documentation.** Parser/lexer lack test files despite supporting CREATE/INSERT/SELECT/DELETE/UPDATE. Acceptance: valid and malformed statements are covered, including EOF and separator edge cases; docs show supported syntax and error behavior.
-4. **Measure storage and index performance.** Existing insertion tests exercise large inputs but provide no benchmark baseline. Acceptance: reproducible benchmarks cover table insert/select and B+ tree insert/find with stated data sizes and report allocations before optimization proposals.
+2. **Add SQL/parser integration tests and usability documentation.** Parser/lexer lack test files despite supporting CREATE/INSERT/SELECT/DELETE/UPDATE. Acceptance: valid and malformed statements are covered, including EOF and separator edge cases; docs show supported syntax and error behavior.
+3. **Measure storage and index performance.** Existing insertion tests exercise large inputs but provide no benchmark baseline. Acceptance: reproducible benchmarks cover table insert/select and B+ tree insert/find with stated data sizes and report allocations before optimization proposals.
 
 ## Next action
 
-Next task: remove package-global state from B+ tree validation, then run parallel validator tests under the race detector. Preserve the supplied untracked `AGENTS.md`.
+Next task: design a WAL/recovery boundary for table and index mutations, then implement failure-injection tests around its write ordering. Preserve the supplied untracked `AGENTS.md`.

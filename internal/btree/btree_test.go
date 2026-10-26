@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -361,6 +362,58 @@ func TestOpenIndexRejectsCorruptMetadataAndPages(t *testing.T) {
 				t.Fatal("OpenIndex succeeded for corrupted file")
 			}
 		})
+	}
+}
+
+func TestValidateConcurrentIndexes(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "data")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatalf("create data directory: %v", err)
+	}
+	t.Setenv("DATA_DIR", dataDir)
+
+	indexes := make([]*Index, 4)
+	for i, name := range []string{"parallel_a", "parallel_b", "parallel_c", "parallel_d"} {
+		idx, err := NewIndex(name, "id")
+		if err != nil {
+			t.Fatalf("NewIndex(%s): %v", name, err)
+		}
+		indexes[i] = idx
+		t.Cleanup(func() { _ = idx.Close() })
+		count := 300 + i*100
+		for key := 0; key < count; key++ {
+			if err := idx.Insert(uint64(key), uint32(key), 0); err != nil {
+				t.Fatalf("Insert %s key %d: %v", name, key, err)
+			}
+		}
+		for key := 0; key < count/2; key++ {
+			if err := idx.Delete(uint64(key)); err != nil {
+				t.Fatalf("Delete %s key %d: %v", name, key, err)
+			}
+		}
+		if err := idx.Validate(); err != nil {
+			t.Fatalf("Validate %s before concurrent checks: %v", name, err)
+		}
+	}
+
+	errCh := make(chan error, len(indexes))
+	var wg sync.WaitGroup
+	for _, idx := range indexes {
+		wg.Add(1)
+		go func(index *Index) {
+			defer wg.Done()
+			for attempt := 0; attempt < 20; attempt++ {
+				if err := index.Validate(); err != nil {
+					errCh <- err
+					return
+				}
+			}
+		}(idx)
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Errorf("Validate concurrently: %v", err)
 	}
 }
 

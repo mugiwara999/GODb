@@ -1232,11 +1232,6 @@ func (ind *Index) FindLeftMostLeaf() (*BTreePage, error) {
 // internal nodes must occupy more than half and less than full capacity (except root)
 // Leaf chain must be a sorted list
 
-var visitedPages []int64
-
-// TODO:
-// make visitedPages thread safe by passing it as paramter, instead of a global variable
-
 // -1 represents unvisited
 // else number represents level
 
@@ -1255,7 +1250,7 @@ func (ind *Index) Validate() error {
 	}
 
 	numPages := ind.GetNumPages()
-	visitedPages = make([]int64, numPages)
+	visitedPages := make([]int64, numPages)
 
 	for i := range visitedPages {
 		visitedPages[i] = -1
@@ -1273,7 +1268,7 @@ func (ind *Index) Validate() error {
 		return fmt.Errorf("root page has non-zero parent ID: %d", rootPage.ParentID())
 	}
 
-	err = ind.validateNode(rootPage, 0, math.MaxUint64, 0, 0)
+	err = ind.validateNode(rootPage, 0, math.MaxUint64, 0, 0, visitedPages)
 
 	if err != nil {
 		return err
@@ -1369,7 +1364,7 @@ func (ind *Index) Validate() error {
 
 }
 
-func (ind *Index) validateNode(node *BTreePage, minKey, maxKey uint64, level int, parentPageID uint32) error {
+func (ind *Index) validateNode(node *BTreePage, minKey, maxKey uint64, level int, parentPageID uint32, visitedPages []int64) error {
 
 	if node == nil {
 		return fmt.Errorf("node is nil")
@@ -1439,7 +1434,7 @@ func (ind *Index) validateNode(node *BTreePage, minKey, maxKey uint64, level int
 			return fmt.Errorf("key %d in internal node %d is out of bounds [%d, %d]", node.GetKey(0), node.ID, minKey, maxKey)
 		}
 
-		err = ind.validateNode(leftMostPage, minKey, node.GetKey(0), level+1, node.ID)
+		err = ind.validateNode(leftMostPage, minKey, node.GetKey(0), level+1, node.ID, visitedPages)
 
 		if err != nil {
 			return err
@@ -1458,12 +1453,12 @@ func (ind *Index) validateNode(node *BTreePage, minKey, maxKey uint64, level int
 					return fmt.Errorf("keys in internal node %d are not sorted: %d >= %d", node.ID, node.GetKey(i), node.GetKey(i+1))
 				}
 
-				err = ind.validateNode(childPage, node.GetKey(i), node.GetKey(i+1), level+1, node.ID)
+				err = ind.validateNode(childPage, node.GetKey(i), node.GetKey(i+1), level+1, node.ID, visitedPages)
 			} else {
 				if node.GetKey(i) > maxKey {
 					return fmt.Errorf("key %d in internal node %d is out of bounds [%d, %d]", node.GetKey(i), node.ID, minKey, maxKey)
 				}
-				err = ind.validateNode(childPage, node.GetKey(i), maxKey, level+1, node.ID)
+				err = ind.validateNode(childPage, node.GetKey(i), maxKey, level+1, node.ID, visitedPages)
 			}
 
 			if err != nil {
