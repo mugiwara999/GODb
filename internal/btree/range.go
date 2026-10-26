@@ -1,6 +1,9 @@
 package btree
 
-import "fmt"
+import (
+	"fmt"
+	"sort"
+)
 
 // RangeIterator streams distinct keys and their associated RIDs in key order.
 // Callers must exclude concurrent index mutations for the lifetime of the
@@ -28,8 +31,8 @@ type RangeRIDEntry struct {
 	RID RID
 }
 
-// RangeRIDIterator streams one RID at a time. Posting pages and duplicate RIDs
-// within each posting chain are validated as they are consumed.
+// RangeRIDIterator streams one RID at a time. Posting pages are validated as
+// they are consumed; duplicate RIDs are checked when a posting chain completes.
 type RangeRIDIterator struct {
 	index            *Index
 	leaf             *BTreePage
@@ -48,7 +51,7 @@ type RangeRIDIterator struct {
 	postingCount     int
 	postingCountRead int
 	seenPostings     map[uint32]struct{}
-	seenRIDs         map[RID]struct{}
+	seenRIDs         []RID
 }
 
 // RangeIterator starts a streaming scan with optional inclusive or exclusive
@@ -190,11 +193,7 @@ func (it *RangeRIDIterator) Next() (entry RangeRIDEntry, ok bool, err error) {
 					it.done = true
 					return RangeRIDEntry{}, false, fmt.Errorf("posting page %d contains reserved marker RID", it.postingPageID)
 				}
-				if _, exists := it.seenRIDs[rid]; exists {
-					it.done = true
-					return RangeRIDEntry{}, false, fmt.Errorf("posting chain contains duplicate RID (%d,%d)", rid.pageID, rid.slotID)
-				}
-				it.seenRIDs[rid] = struct{}{}
+				it.seenRIDs = append(it.seenRIDs, rid)
 				it.postingCountRead++
 				return RangeRIDEntry{Key: it.key, RID: rid}, true, nil
 			}
@@ -204,10 +203,22 @@ func (it *RangeRIDIterator) Next() (entry RangeRIDEntry, ok bool, err error) {
 					it.done = true
 					return RangeRIDEntry{}, false, fmt.Errorf("posting chain at page %d has fewer than two RIDs", it.postingHead)
 				}
+				sort.Slice(it.seenRIDs, func(i, j int) bool {
+					if it.seenRIDs[i].pageID != it.seenRIDs[j].pageID {
+						return it.seenRIDs[i].pageID < it.seenRIDs[j].pageID
+					}
+					return it.seenRIDs[i].slotID < it.seenRIDs[j].slotID
+				})
+				for i := 1; i < len(it.seenRIDs); i++ {
+					if sameRID(it.seenRIDs[i-1], it.seenRIDs[i]) {
+						it.done = true
+						return RangeRIDEntry{}, false, fmt.Errorf("posting chain contains duplicate RID (%d,%d)", it.seenRIDs[i].pageID, it.seenRIDs[i].slotID)
+					}
+				}
 				it.postingPageID = 0
 				it.postingPage = nil
 				it.seenPostings = nil
-				it.seenRIDs = nil
+				it.seenRIDs = it.seenRIDs[:0]
 				it.postingCountRead = 0
 				continue
 			}
@@ -264,7 +275,7 @@ func (it *RangeRIDIterator) Next() (entry RangeRIDEntry, ok bool, err error) {
 		it.postingPage = nil
 		it.postingCountRead = 0
 		it.seenPostings = make(map[uint32]struct{})
-		it.seenRIDs = make(map[RID]struct{})
+		it.seenRIDs = it.seenRIDs[:0]
 	}
 }
 
