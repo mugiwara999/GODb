@@ -496,7 +496,7 @@
 - Finding: `IncrementNumKeys` incremented the serialized uint16 without checking the page type or node-specific capacity, so a full or malformed page could silently become structurally invalid or wrap.
 - Changes: the helper now returns an error for nil, non-leaf/internal, and full/corrupt pages. Leaf and internal insertion paths propagate failures and reject already-full pages before moving entry bytes.
 - Regression coverage: full leaf/internal counts, corrupt uint16 count, posting/invalid types, nil receiver, failed-call no mutation, and valid increments to each page capacity.
-- Verification: focused tests passed; full tests/build/vet and Windows/Solaris package cross-target checks passed. B-tree/table race tests are still running for this checkpoint.
+- Verification: focused tests passed; full tests/build/vet, B-tree/table race tests, and Windows/Solaris package cross-target checks passed. Hosted run `40268329831` passed Windows and Ubuntu tests/build/vet.
 - Limitations: `SetNumKeys` remains a deliberately raw serialized-field writer for split/rebalance logic and corruption tests; its call sites need a separate invariant audit.
 - Commit: `fc85cdc` (`Guard B-tree key count increments`).
 
@@ -505,7 +505,7 @@
 - Finding: posting-page RID helpers used caller indexes directly against a serialized page. Invalid node types, counts, or indexes could panic or interpret unrelated bytes as a RID.
 - Changes: `GetPostingRID` now returns `(RID, error)` and validates a nonnil posting page, count, and live slot. `SetPostingRID` returns an error and validates page type, count, append position, and physical capacity. Duplicate insertion, compaction, chain reads, range streaming, benchmark setup, and corruption tests propagate errors.
 - Regression coverage: nil/wrong page types, empty/corrupt counts, negative, skipped, past-count and out-of-capacity indexes, no mutation on failure, append-at-count and final physical slot round trips.
-- Verification: focused B-tree/table tests and full tests/build/vet passed; B-tree/table race tests passed; Windows and Solaris package test binaries cross-compiled with `go test -exec=true`.
+- Verification: focused B-tree/table tests and full tests/build/vet passed; B-tree/table race tests passed; Windows and Solaris package test binaries cross-compiled with `go test -exec=true`. Hosted run `40268530725` has Ubuntu green; Windows is still in progress.
 - Limitations: `SetNumKeys` and `SetPostingCount` remain raw serialized-field writers; their call-site invariants need review.
 - Commit: `48db65f` (`Bounds-check posting page RID access`).
 
@@ -527,4 +527,4 @@
 
 ## Next action
 
-Next task: review `SetNumKeys` and `SetPostingCount` call-site invariants, and see whether callers can use validated count setters. Separately continue seeking a usable Solaris/illumos runtime. Windows native storage tests pass in run `40267182421`. Preserve the supplied untracked `AGENTS.md`.
+Next task: review `SetNumKeys` and `SetPostingCount` call-site invariants, and see whether callers can use validated count setters. Current HEAD `8a34bfa` has hosted run `40268689103` in progress (Ubuntu green, Windows running); check its result before further edits. The worktree contains only the supplied untracked `AGENTS.md`. Separately continue seeking a usable Solaris/illumos runtime. Windows native storage tests pass in run `40267182421`. Preserve the supplied untracked `AGENTS.md`.
