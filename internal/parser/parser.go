@@ -39,15 +39,7 @@ func unexpectedToken(op string, token lexer.Token) error {
 
 func parseFilters(l *lexer.Lexer, token lexer.Token, op string) ([]Pair, error) {
 	filters := make([]Pair, 0)
-
 	for {
-		if token.Type == lexer.TOKEN_EOF {
-			return filters, nil
-		}
-		if token.Type == lexer.TOKEN_AND {
-			token = l.NextToken()
-			continue
-		}
 		if token.Type != lexer.TOKEN_IDENT {
 			return nil, unexpectedToken(op, token)
 		}
@@ -65,27 +57,39 @@ func parseFilters(l *lexer.Lexer, token lexer.Token, op string) ([]Pair, error) 
 
 		filters = append(filters, Pair{ColName: colName, ColValue: token.Value})
 		token = l.NextToken()
+		if token.Type == lexer.TOKEN_EOF {
+			return filters, nil
+		}
+		if token.Type != lexer.TOKEN_AND {
+			return nil, unexpectedToken(op, token)
+		}
+		token = l.NextToken()
 	}
 }
 
 func parseIdentList(op string, l *lexer.Lexer, stop lexer.TokenType) ([]string, lexer.Token, error) {
 	values := make([]string, 0)
 	token := l.NextToken()
-
-	for token.Type != stop && token.Type != lexer.TOKEN_EOF {
-		switch token.Type {
-		case lexer.TOKEN_COMMA:
-			token = l.NextToken()
-			continue
-		case lexer.TOKEN_IDENT, lexer.TOKEN_STRING, lexer.TOKEN_NUMBER, lexer.TOKEN_STAR:
-			values = append(values, token.Value)
-			token = l.NextToken()
-		default:
+	for {
+		if token.Type == stop || token.Type == lexer.TOKEN_EOF {
+			return values, token, nil
+		}
+		if token.Type != lexer.TOKEN_IDENT && token.Type != lexer.TOKEN_STRING && token.Type != lexer.TOKEN_NUMBER && token.Type != lexer.TOKEN_STAR {
 			return nil, token, unexpectedToken(op, token)
 		}
+		values = append(values, token.Value)
+		token = l.NextToken()
+		if token.Type == stop || token.Type == lexer.TOKEN_EOF {
+			return values, token, nil
+		}
+		if token.Type != lexer.TOKEN_COMMA {
+			return nil, token, syntaxError(op, "expected ',' between values")
+		}
+		token = l.NextToken()
+		if token.Type == stop || token.Type == lexer.TOKEN_EOF {
+			return nil, token, syntaxError(op, "expected value after ','")
+		}
 	}
-
-	return values, token, nil
 }
 
 func Parse(input string) (*Query, error) {
@@ -115,23 +119,31 @@ func Parse(input string) (*Query, error) {
 
 		columns := make([]string, 0)
 		token = l.NextToken()
-		for token.Type != lexer.TOKEN_RPAREN && token.Type != lexer.TOKEN_EOF {
-			if token.Type == lexer.TOKEN_COMMA {
-				token = l.NextToken()
-				continue
-			}
+		for {
 			if token.Type != lexer.TOKEN_IDENT {
+				if token.Type == lexer.TOKEN_EOF {
+					return nil, syntaxError("parse create table", "expected ')' after column list")
+				}
 				return nil, unexpectedToken("parse create table", token)
 			}
 			columns = append(columns, token.Value)
 			token = l.NextToken()
-		}
-
-		if token.Type != lexer.TOKEN_RPAREN {
-			return nil, syntaxError("parse create table", "expected ')' after column list")
+			if token.Type == lexer.TOKEN_RPAREN {
+				break
+			}
+			if token.Type != lexer.TOKEN_COMMA {
+				return nil, syntaxError("parse create table", "expected ',' or ')' after column name")
+			}
+			token = l.NextToken()
+			if token.Type == lexer.TOKEN_RPAREN {
+				return nil, syntaxError("parse create table", "expected column name after ','")
+			}
 		}
 		if len(columns) == 0 {
 			return nil, syntaxError("parse create table", "at least one column name is required")
+		}
+		if token := l.NextToken(); token.Type != lexer.TOKEN_EOF {
+			return nil, unexpectedToken("parse create table", token)
 		}
 
 		query.Columns = columns
@@ -251,12 +263,11 @@ func Parse(input string) (*Query, error) {
 
 		updates := make([]Pair, 0)
 		token = l.NextToken()
-		for token.Type != lexer.TOKEN_WHERE && token.Type != lexer.TOKEN_EOF {
-			if token.Type == lexer.TOKEN_COMMA {
-				token = l.NextToken()
-				continue
-			}
+		for {
 			if token.Type != lexer.TOKEN_IDENT {
+				if token.Type == lexer.TOKEN_WHERE || token.Type == lexer.TOKEN_EOF {
+					break
+				}
 				return nil, unexpectedToken("parse update", token)
 			}
 
@@ -273,6 +284,16 @@ func Parse(input string) (*Query, error) {
 
 			updates = append(updates, Pair{ColName: colName, ColValue: token.Value})
 			token = l.NextToken()
+			if token.Type == lexer.TOKEN_WHERE || token.Type == lexer.TOKEN_EOF {
+				break
+			}
+			if token.Type != lexer.TOKEN_COMMA {
+				return nil, syntaxError("parse update", "expected ',' between assignments")
+			}
+			token = l.NextToken()
+			if token.Type == lexer.TOKEN_WHERE || token.Type == lexer.TOKEN_EOF {
+				return nil, syntaxError("parse update", "expected assignment after ','")
+			}
 		}
 
 		if len(updates) == 0 {
