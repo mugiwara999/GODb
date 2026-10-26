@@ -179,12 +179,20 @@ func (it *RangeRIDIterator) Next() (entry RangeRIDEntry, ok bool, err error) {
 					it.done = true
 					return RangeRIDEntry{}, false, fmt.Errorf("posting page %d has node type %d", it.postingPageID, page.NodeType())
 				}
-				it.postingCount = page.PostingCount()
+				it.postingCount, err = page.PostingCount()
+				if err != nil {
+					it.done = true
+					return RangeRIDEntry{}, false, err
+				}
 				if it.postingCount == 0 || it.postingCount > MaxRIDsPerPosting {
 					it.done = true
 					return RangeRIDEntry{}, false, fmt.Errorf("posting page %d has invalid RID count %d", it.postingPageID, it.postingCount)
 				}
-				next := page.NextPostingPage()
+				next, err := page.NextPostingPage()
+				if err != nil {
+					it.done = true
+					return RangeRIDEntry{}, false, err
+				}
 				if next != 0 && next >= it.index.numPages {
 					it.done = true
 					return RangeRIDEntry{}, false, fmt.Errorf("posting page %d has out-of-bounds next page %d", it.postingPageID, next)
@@ -207,7 +215,11 @@ func (it *RangeRIDIterator) Next() (entry RangeRIDEntry, ok bool, err error) {
 				it.postingCountRead++
 				return RangeRIDEntry{Key: it.key, RID: rid}, true, nil
 			}
-			next := it.postingPage.NextPostingPage()
+			next, err := it.postingPage.NextPostingPage()
+			if err != nil {
+				it.done = true
+				return RangeRIDEntry{}, false, err
+			}
 			if next == 0 {
 				if it.postingCountRead < 2 {
 					it.done = true
@@ -241,7 +253,11 @@ func (it *RangeRIDIterator) Next() (entry RangeRIDEntry, ok bool, err error) {
 			return RangeRIDEntry{}, false, nil
 		}
 		if it.keyIndex >= it.leaf.GetNumKeys() {
-			next := it.leaf.NextLeaf()
+			next, err := it.leaf.NextLeaf()
+			if err != nil {
+				it.done = true
+				return RangeRIDEntry{}, false, err
+			}
 			if next == 0 {
 				it.done = true
 				return RangeRIDEntry{}, false, nil
@@ -331,7 +347,11 @@ func (it *RangeIterator) Next() (entry RangeEntry, ok bool, err error) {
 			}
 			return RangeEntry{Key: key, RIDs: rids}, true, nil
 		}
-		next := it.leaf.NextLeaf()
+		next, err := it.leaf.NextLeaf()
+		if err != nil {
+			it.done = true
+			return RangeEntry{}, false, err
+		}
 		if next == 0 {
 			it.done = true
 			return RangeEntry{}, false, nil

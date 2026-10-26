@@ -374,9 +374,14 @@ func (b *BTreePage) SetParentID(n uint32) {
 	binary.LittleEndian.PutUint32(b.Data[3:7], n)
 }
 
-func (b *BTreePage) NextLeaf() uint32 {
-
-	return binary.LittleEndian.Uint32(b.Data[7:11])
+func (b *BTreePage) NextLeaf() (uint32, error) {
+	if b == nil {
+		return 0, fmt.Errorf("get next leaf: nil page")
+	}
+	if b.NodeType() != LeafNode {
+		return 0, fmt.Errorf("get next leaf from page %d: expected leaf node, got %d", b.ID, b.NodeType())
+	}
+	return binary.LittleEndian.Uint32(b.Data[7:11]), nil
 }
 
 func (b *BTreePage) SetNextLeaf(n uint32) error {
@@ -390,8 +395,18 @@ func (b *BTreePage) SetNextLeaf(n uint32) error {
 	return nil
 }
 
-func (b *BTreePage) PostingCount() int {
-	return int(binary.LittleEndian.Uint16(b.Data[1:3]))
+func (b *BTreePage) PostingCount() (int, error) {
+	if b == nil {
+		return 0, fmt.Errorf("get posting count: nil page")
+	}
+	if b.NodeType() != PostingNode {
+		return 0, fmt.Errorf("get posting count from page %d: expected posting node, got %d", b.ID, b.NodeType())
+	}
+	count := int(binary.LittleEndian.Uint16(b.Data[1:3]))
+	if count > MaxRIDsPerPosting {
+		return 0, fmt.Errorf("get posting count from page %d: count %d exceeds maximum %d", b.ID, count, MaxRIDsPerPosting)
+	}
+	return count, nil
 }
 
 func (b *BTreePage) SetPostingCount(n uint16) error {
@@ -408,12 +423,25 @@ func (b *BTreePage) SetPostingCount(n uint16) error {
 	return nil
 }
 
-func (b *BTreePage) NextPostingPage() uint32 {
-	return binary.LittleEndian.Uint32(b.Data[3:7])
+func (b *BTreePage) NextPostingPage() (uint32, error) {
+	if b == nil {
+		return 0, fmt.Errorf("get next posting page: nil page")
+	}
+	if b.NodeType() != PostingNode {
+		return 0, fmt.Errorf("get next posting page from page %d: expected posting node, got %d", b.ID, b.NodeType())
+	}
+	return binary.LittleEndian.Uint32(b.Data[3:7]), nil
 }
 
-func (b *BTreePage) SetNextPostingPage(id uint32) {
+func (b *BTreePage) SetNextPostingPage(id uint32) error {
+	if b == nil {
+		return fmt.Errorf("set next posting page: nil page")
+	}
+	if b.NodeType() != PostingNode {
+		return fmt.Errorf("set next posting page on page %d: expected posting node, got %d", b.ID, b.NodeType())
+	}
 	binary.LittleEndian.PutUint32(b.Data[3:7], id)
+	return nil
 }
 
 func (b *BTreePage) GetPostingRID(i int) (RID, error) {
@@ -423,7 +451,10 @@ func (b *BTreePage) GetPostingRID(i int) (RID, error) {
 	if b.NodeType() != PostingNode {
 		return RID{}, fmt.Errorf("get posting RID from page %d: expected posting node, got %d", b.ID, b.NodeType())
 	}
-	count := b.PostingCount()
+	count, err := b.PostingCount()
+	if err != nil {
+		return RID{}, err
+	}
 	if count < 1 || count > MaxRIDsPerPosting {
 		return RID{}, fmt.Errorf("get posting RID from page %d: invalid RID count %d", b.ID, count)
 	}
@@ -444,7 +475,10 @@ func (b *BTreePage) SetPostingRID(i int, rid RID) error {
 	if b.NodeType() != PostingNode {
 		return fmt.Errorf("set posting RID on page %d: expected posting node, got %d", b.ID, b.NodeType())
 	}
-	count := b.PostingCount()
+	count, err := b.PostingCount()
+	if err != nil {
+		return err
+	}
 	if count > MaxRIDsPerPosting {
 		return fmt.Errorf("set posting RID on page %d: invalid RID count %d", b.ID, count)
 	}

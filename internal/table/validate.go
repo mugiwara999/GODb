@@ -82,7 +82,10 @@ func (t *Table) validatePrimaryIndex() error {
 			}
 		}
 
-		next := leaf.NextLeaf()
+		next, err := leaf.NextLeaf()
+		if err != nil {
+			return fmt.Errorf("validate primary index for table %q: %w", t.Name, err)
+		}
 		if next == 0 {
 			break
 		}
@@ -207,7 +210,10 @@ func (t *Table) ValidateIndexes() error {
 					}
 				}
 			}
-			next := leaf.NextLeaf()
+			next, err := leaf.NextLeaf()
+			if err != nil {
+				return fmt.Errorf("validate secondary index %q: %w", column, err)
+			}
 			if next == 0 {
 				break
 			}

@@ -217,6 +217,9 @@ func TestBTreeGetKeyValidatesPageAndIndex(t *testing.T) {
 
 func TestBTreePointerSettersCheckPageType(t *testing.T) {
 	var nilPage *BTreePage
+	if _, err := nilPage.NextLeaf(); err == nil {
+		t.Fatal("NextLeaf accepted nil page")
+	}
 	if err := nilPage.SetNextLeaf(7); err == nil {
 		t.Fatal("SetNextLeaf accepted nil page")
 	}
@@ -259,12 +262,14 @@ func TestBTreePointerSettersCheckPageType(t *testing.T) {
 	if err := leaf.SetNextLeaf(29); err != nil {
 		t.Fatal(err)
 	}
-	if got := leaf.NextLeaf(); got != 29 {
-		t.Fatalf("next leaf = %d, want 29", got)
+	if got, err := leaf.NextLeaf(); err != nil || got != 29 {
+		t.Fatalf("next leaf = %d, %v; want 29", got, err)
 	}
-
 	internal := &BTreePage{ID: 6}
 	InitInternalPage(internal)
+	if _, err := internal.NextLeaf(); err == nil {
+		t.Fatal("NextLeaf accepted internal page")
+	}
 	if err := internal.SetLeftmostChild(31); err != nil {
 		t.Fatal(err)
 	}
@@ -456,9 +461,55 @@ func TestSetPostingCountValidatesNodeCapacity(t *testing.T) {
 		if err := page.SetPostingCount(count); err != nil {
 			t.Fatalf("SetPostingCount(%d): %v", count, err)
 		}
-		if got := page.PostingCount(); got != int(count) {
-			t.Fatalf("posting count = %d, want %d", got, count)
+		if got, err := page.PostingCount(); err != nil || got != int(count) {
+			t.Fatalf("posting count = %d, %v; want %d", got, err, count)
 		}
+	}
+}
+
+func TestPostingPageAccessorsValidateTypeAndCount(t *testing.T) {
+	var nilPage *BTreePage
+	if _, err := nilPage.PostingCount(); err == nil {
+		t.Fatal("PostingCount accepted nil page")
+	}
+	if _, err := nilPage.NextPostingPage(); err == nil {
+		t.Fatal("NextPostingPage accepted nil page")
+	}
+	if err := nilPage.SetNextPostingPage(1); err == nil {
+		t.Fatal("SetNextPostingPage accepted nil page")
+	}
+	for _, page := range []*BTreePage{
+		{ID: 1, Data: [PAGE_SIZE]byte{byte(LeafNode)}},
+		{ID: 2, Data: [PAGE_SIZE]byte{0xff}},
+	} {
+		if _, err := page.PostingCount(); err == nil {
+			t.Fatalf("PostingCount accepted node type %d", page.NodeType())
+		}
+		if _, err := page.NextPostingPage(); err == nil {
+			t.Fatalf("NextPostingPage accepted node type %d", page.NodeType())
+		}
+		before := page.Data
+		if err := page.SetNextPostingPage(3); err == nil {
+			t.Fatalf("SetNextPostingPage accepted node type %d", page.NodeType())
+		}
+		if page.Data != before {
+			t.Fatal("failed SetNextPostingPage mutated page")
+		}
+	}
+	page := &BTreePage{ID: 3}
+	page.Data[0] = byte(PostingNode)
+	setRawPageCountForTest(page, ^uint16(0))
+	if _, err := page.PostingCount(); err == nil {
+		t.Fatal("PostingCount accepted corrupt count")
+	}
+	before := page.Data
+	if err := page.SetNextPostingPage(7); err != nil {
+		t.Fatal(err)
+	}
+	want := before
+	binary.LittleEndian.PutUint32(want[3:7], 7)
+	if page.Data != want {
+		t.Fatal("SetNextPostingPage changed bytes outside its field")
 	}
 }
 
@@ -1134,7 +1185,10 @@ func TestInvariantsAfterInsert(t *testing.T) {
 				lastKey = key
 			}
 			prevLeaf = leaf
-			leafID = prevLeaf.NextLeaf()
+			leafID, err = prevLeaf.NextLeaf()
+			if err != nil {
+				t.Fatalf("leaf %d next pointer: %v", prevLeaf.ID, err)
+			}
 		}
 
 		// 2. Parent pointers & internal node consistency
@@ -1485,7 +1539,9 @@ func TestValidateRejectsCorruptDuplicatePostingCycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	posting.SetNextPostingPage(posting.ID)
+	if err := posting.SetNextPostingPage(posting.ID); err != nil {
+		t.Fatal(err)
+	}
 	if err := index.WritePage(posting); err != nil {
 		t.Fatal(err)
 	}

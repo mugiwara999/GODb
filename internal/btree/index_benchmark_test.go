@@ -139,7 +139,9 @@ func benchmarkDuplicateIndex(b *testing.B, totalRIDs int) *Index {
 		if tail == nil {
 			head = page
 		} else {
-			tail.SetNextPostingPage(page.ID)
+			if err := tail.SetNextPostingPage(page.ID); err != nil {
+				b.Fatal(err)
+			}
 			if err := idx.WritePage(tail); err != nil {
 				b.Fatal(err)
 			}

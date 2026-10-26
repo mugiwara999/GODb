@@ -286,7 +286,9 @@ func (ind *Index) NewPostingPage() (*BTreePage, error) {
 	if err := page.SetPostingCount(0); err != nil {
 		return nil, err
 	}
-	page.SetNextPostingPage(0)
+	if err := page.SetNextPostingPage(0); err != nil {
+		return nil, err
+	}
 	return page, nil
 }
 
@@ -433,7 +435,11 @@ func (ind *Index) SplitLeafPage(p *BTreePage) (newPage *BTreePage, ascendKey uin
 		return nil, 0, err
 	}
 
-	if err := newPage.SetNextLeaf(p.NextLeaf()); err != nil {
+	nextLeaf, err := p.NextLeaf()
+	if err != nil {
+		return nil, 0, err
+	}
+	if err := newPage.SetNextLeaf(nextLeaf); err != nil {
 		return nil, 0, err
 	}
 	if err := p.SetNextLeaf(newPage.ID); err != nil {
@@ -952,11 +958,15 @@ func (ind *Index) InsertDuplicate(key uint64, pageID uint32, slotID uint16) erro
 			}
 		}
 		tail := postingPages[len(postingPages)-1]
-		if tail.PostingCount() < MaxRIDsPerPosting {
-			if err := tail.SetPostingRID(tail.PostingCount(), rid); err != nil {
+		tailCount, err := tail.PostingCount()
+		if err != nil {
+			return err
+		}
+		if tailCount < MaxRIDsPerPosting {
+			if err := tail.SetPostingRID(tailCount, rid); err != nil {
 				return err
 			}
-			if err := tail.SetPostingCount(uint16(tail.PostingCount() + 1)); err != nil {
+			if err := tail.SetPostingCount(uint16(tailCount + 1)); err != nil {
 				return err
 			}
 			return ind.WritePage(tail)
@@ -974,7 +984,9 @@ func (ind *Index) InsertDuplicate(key uint64, pageID uint32, slotID uint16) erro
 		if err := ind.WritePage(newPage); err != nil {
 			return fmt.Errorf("write posting page %d: %w", newPage.ID, err)
 		}
-		tail.SetNextPostingPage(newPage.ID)
+		if err := tail.SetNextPostingPage(newPage.ID); err != nil {
+			return err
+		}
 		return ind.WritePage(tail)
 	}
 
@@ -1045,12 +1057,18 @@ func (ind *Index) CountAll(key uint64) (uint64, error) {
 			if page.NodeType() != PostingNode {
 				return 0, fmt.Errorf("posting page %d has node type %d", pageID, page.NodeType())
 			}
-			pageCount := page.PostingCount()
+			pageCount, err := page.PostingCount()
+			if err != nil {
+				return 0, err
+			}
 			if pageCount == 0 || pageCount > MaxRIDsPerPosting {
 				return 0, fmt.Errorf("posting page %d has invalid RID count %d", pageID, pageCount)
 			}
 			count += uint64(pageCount)
-			next := page.NextPostingPage()
+			next, err := page.NextPostingPage()
+			if err != nil {
+				return 0, err
+			}
 			if next != 0 && next >= ind.numPages {
 				return 0, fmt.Errorf("posting page %d has out-of-bounds next page %d", pageID, next)
 			}
@@ -1131,9 +1149,13 @@ func (ind *Index) DeleteRID(key uint64, pageID uint32, slotID uint16) error {
 					return err
 				}
 				if pageIndex+1 < requiredPages {
-					posting.SetNextPostingPage(postingPages[pageIndex+1].ID)
+					if err := posting.SetNextPostingPage(postingPages[pageIndex+1].ID); err != nil {
+						return err
+					}
 				} else {
-					posting.SetNextPostingPage(0)
+					if err := posting.SetNextPostingPage(0); err != nil {
+						return err
+					}
 				}
 				for j, rid := range rids[start:end] {
 					if err := posting.SetPostingRID(j, rid); err != nil {
@@ -1186,7 +1208,10 @@ func (ind *Index) readPostingChain(head uint32) ([]*BTreePage, []RID, error) {
 		if page.NodeType() != PostingNode {
 			return nil, nil, fmt.Errorf("posting page %d has node type %d", pageID, page.NodeType())
 		}
-		count := page.PostingCount()
+		count, err := page.PostingCount()
+		if err != nil {
+			return nil, nil, err
+		}
 		if count == 0 || count > MaxRIDsPerPosting {
 			return nil, nil, fmt.Errorf("posting page %d has invalid RID count %d", pageID, count)
 		}
@@ -1205,7 +1230,10 @@ func (ind *Index) readPostingChain(head uint32) ([]*BTreePage, []RID, error) {
 			seenRIDs[rid] = struct{}{}
 			rids = append(rids, rid)
 		}
-		next := page.NextPostingPage()
+		next, err := page.NextPostingPage()
+		if err != nil {
+			return nil, nil, err
+		}
 		if next != 0 && next >= ind.numPages {
 			return nil, nil, fmt.Errorf("posting page %d has out-of-bounds next page %d", pageID, next)
 		}
@@ -1508,7 +1536,11 @@ func (ind *Index) rebalanceLeaf(leaf *BTreePage) error {
 		if err := left.SetNumKeys(uint16(leftCount + leafCount)); err != nil {
 			return err
 		}
-		if err := left.SetNextLeaf(leaf.NextLeaf()); err != nil {
+		nextLeaf, err := leaf.NextLeaf()
+		if err != nil {
+			return err
+		}
+		if err := left.SetNextLeaf(nextLeaf); err != nil {
 			return err
 		}
 		children, keys = removeChild(children, keys, pos)
@@ -1536,7 +1568,11 @@ func (ind *Index) rebalanceLeaf(leaf *BTreePage) error {
 	if err := leaf.SetNumKeys(uint16(leafCount + rightCount)); err != nil {
 		return err
 	}
-	if err := leaf.SetNextLeaf(right.NextLeaf()); err != nil {
+	nextLeaf, err := right.NextLeaf()
+	if err != nil {
+		return err
+	}
+	if err := leaf.SetNextLeaf(nextLeaf); err != nil {
 		return err
 	}
 	children, keys = removeChild(children, keys, pos+1)
@@ -1987,7 +2023,10 @@ func (ind *Index) Validate() error {
 
 		visitedLeaves[leaf.ID] = true
 
-		nextLeafID := leaf.NextLeaf()
+		nextLeafID, err := leaf.NextLeaf()
+		if err != nil {
+			return err
+		}
 
 		if nextLeafID == 0 {
 			break
