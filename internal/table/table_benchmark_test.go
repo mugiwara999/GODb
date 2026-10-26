@@ -153,3 +153,51 @@ func BenchmarkTableSelectParallelReaders(b *testing.B) {
 		})
 	}
 }
+
+func BenchmarkTableSelectMultipleIndexes(b *testing.B) {
+	dataDir := filepath.Join(b.TempDir(), "data")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		b.Fatal(err)
+	}
+	b.Setenv("DATA_DIR", dataDir)
+	tbl, err := table.CreateWithTypes("multi_index_bench", []table.Column{
+		{Name: "account", Type: table.ColumnUint64},
+		{Name: "code", Type: table.ColumnUint64},
+	})
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(func() { _ = tbl.Close() })
+	const rows = 2048
+	for i := 0; i < rows; i++ {
+		if err := tbl.Insert([]string{"1", strconv.Itoa(i)}); err != nil {
+			b.Fatalf("seed Insert(%d): %v", i, err)
+		}
+	}
+	for _, column := range []string{"account", "code"} {
+		if err := tbl.CreateIndex(column); err != nil {
+			b.Fatalf("CreateIndex(%s): %v", column, err)
+		}
+	}
+	for _, tc := range []struct {
+		name    string
+		filters []table.ColEq
+	}{
+		{name: "broad_first", filters: []table.ColEq{{ColIdx: 1, Value: "1"}, {ColIdx: 2, Value: "1024"}}},
+		{name: "selective_first", filters: []table.ColEq{{ColIdx: 2, Value: "1024"}, {ColIdx: 1, Value: "1"}}},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				result, err := tbl.Select([]string{"id"}, tc.filters)
+				if err != nil {
+					b.Fatalf("Select: %v", err)
+				}
+				if len(result) != 2 {
+					b.Fatalf("Select returned %d rows, want header and one match", len(result))
+				}
+			}
+		})
+	}
+}

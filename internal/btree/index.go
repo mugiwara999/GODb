@@ -916,6 +916,55 @@ func (ind *Index) FindAll(key uint64) ([]RID, error) {
 	return nil, fmt.Errorf("key %d: %w", key, ErrKeyNotFound)
 }
 
+// CountAll returns the number of RIDs associated with key without allocating
+// a RID slice. Posting pages are still checked for cycles, invalid types,
+// impossible counts, and out-of-range links.
+func (ind *Index) CountAll(key uint64) (uint64, error) {
+	_, leaf, err := ind.FindLeaf(key)
+	if err != nil {
+		return 0, err
+	}
+	for i := 0; i < leaf.GetNumKeys(); i++ {
+		if leaf.GetKey(i) != key {
+			continue
+		}
+		stored := leaf.GetRID(i)
+		if stored.slotID != PostingMarkerSlot {
+			return 1, nil
+		}
+		var count uint64
+		seen := make(map[uint32]struct{})
+		for pageID := stored.pageID; pageID != 0; {
+			if _, exists := seen[pageID]; exists {
+				return 0, fmt.Errorf("posting chain contains cycle at page %d", pageID)
+			}
+			seen[pageID] = struct{}{}
+			page, err := ind.GetPage(pageID)
+			if err != nil {
+				return 0, fmt.Errorf("read posting page %d: %w", pageID, err)
+			}
+			if page.NodeType() != PostingNode {
+				return 0, fmt.Errorf("posting page %d has node type %d", pageID, page.NodeType())
+			}
+			pageCount := page.PostingCount()
+			if pageCount == 0 || pageCount > MaxRIDsPerPosting {
+				return 0, fmt.Errorf("posting page %d has invalid RID count %d", pageID, pageCount)
+			}
+			count += uint64(pageCount)
+			next := page.NextPostingPage()
+			if next != 0 && next >= ind.numPages {
+				return 0, fmt.Errorf("posting page %d has out-of-bounds next page %d", pageID, next)
+			}
+			pageID = next
+		}
+		if count < 2 {
+			return 0, fmt.Errorf("posting chain at page %d has fewer than two RIDs", stored.pageID)
+		}
+		return count, nil
+	}
+	return 0, fmt.Errorf("key %d: %w", key, ErrKeyNotFound)
+}
+
 // DeleteRID removes one exact key/RID association. It frees posting pages when
 // a duplicate key shrinks back to one RID, and removes the key when none remain.
 func (ind *Index) DeleteRID(key uint64, pageID uint32, slotID uint16) error {

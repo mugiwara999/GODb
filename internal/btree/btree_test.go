@@ -558,6 +558,9 @@ func TestDuplicatePostingChainsReopenDeleteAndReusePages(t *testing.T) {
 	if len(rids) != total {
 		t.Fatalf("FindAll returned %d RIDs, want %d", len(rids), total)
 	}
+	if count, err := index.CountAll(42); err != nil || count != uint64(total) {
+		t.Fatalf("CountAll = %d, %v; want %d", count, err, total)
+	}
 	first, err := index.Find(42)
 	if err != nil || first.GetPageID() != 100 || first.GetSlotID() != 1 {
 		t.Fatalf("Find first RID = %v, %v; want (100,1)", first, err)
@@ -571,6 +574,9 @@ func TestDuplicatePostingChainsReopenDeleteAndReusePages(t *testing.T) {
 	if err != nil || len(remaining) != 1 || remaining[0].GetPageID() != rids[total-1].GetPageID() {
 		t.Fatalf("FindAll after shrinking chain = %v, %v", remaining, err)
 	}
+	if count, err := index.CountAll(42); err != nil || count != 1 {
+		t.Fatalf("CountAll after shrinking = %d, %v; want 1", count, err)
+	}
 	if err := index.Validate(); err != nil {
 		t.Fatalf("Validate after shrinking chain: %v", err)
 	}
@@ -579,6 +585,9 @@ func TestDuplicatePostingChainsReopenDeleteAndReusePages(t *testing.T) {
 	}
 	if _, err := index.FindAll(42); !errors.Is(err, ErrKeyNotFound) {
 		t.Fatalf("FindAll after deleting key = %v, want ErrKeyNotFound", err)
+	}
+	if _, err := index.CountAll(42); !errors.Is(err, ErrKeyNotFound) {
+		t.Fatalf("CountAll after deleting key = %v, want ErrKeyNotFound", err)
 	}
 	if err := index.Validate(); err != nil {
 		t.Fatalf("Validate after deleting key: %v", err)
@@ -673,6 +682,9 @@ func TestValidateRejectsCorruptDuplicatePostingCycle(t *testing.T) {
 	posting.SetNextPostingPage(posting.ID)
 	if err := index.WritePage(posting); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := index.CountAll(9); err == nil || !strings.Contains(err.Error(), "cycle") {
+		t.Fatalf("CountAll error = %v, want posting cycle error", err)
 	}
 	if err := index.Validate(); err == nil || !strings.Contains(err.Error(), "cycle") {
 		t.Fatalf("Validate error = %v, want posting cycle error", err)

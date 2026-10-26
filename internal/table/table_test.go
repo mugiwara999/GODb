@@ -542,6 +542,45 @@ func TestCloseSerializesWithSelectAndIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestSelectWithMultipleIndexesReturnsSameRowsInAnyFilterOrder(t *testing.T) {
+	setupTableTest(t)
+	tbl, err := table.CreateWithTypes("multi_index_select", []table.Column{
+		{Name: "account", Type: table.ColumnUint64},
+		{Name: "code", Type: table.ColumnUint64},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tbl.Close()
+	for i := 0; i < 40; i++ {
+		if err := tbl.Insert([]string{"1", strconv.Itoa(i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, column := range []string{"account", "code"} {
+		if err := tbl.CreateIndex(column); err != nil {
+			t.Fatalf("CreateIndex(%s): %v", column, err)
+		}
+	}
+	filters := []table.ColEq{{ColIdx: 1, Value: "1"}, {ColIdx: 2, Value: "27"}}
+	for _, filterOrder := range [][]table.ColEq{filters, {filters[1], filters[0]}} {
+		rows, err := tbl.Select([]string{"account", "code"}, filterOrder)
+		if err != nil {
+			t.Fatalf("Select(%v): %v", filterOrder, err)
+		}
+		if len(rows) != 2 || rows[1][0] != "1" || rows[1][1] != "27" {
+			t.Fatalf("Select(%v) = %q; want the same single row", filterOrder, rows)
+		}
+	}
+	missingFilters := []table.ColEq{{ColIdx: 1, Value: "1"}, {ColIdx: 2, Value: "999"}}
+	for _, filterOrder := range [][]table.ColEq{missingFilters, {missingFilters[1], missingFilters[0]}} {
+		rows, err := tbl.Select([]string{"account", "code"}, filterOrder)
+		if err != nil || len(rows) != 1 {
+			t.Fatalf("Select missing match with %v = %q, %v; want header only", filterOrder, rows, err)
+		}
+	}
+}
+
 func TestRejectedInsertDoesNotConsumeIDOrAllocatePage(t *testing.T) {
 	setupTableTest(t)
 

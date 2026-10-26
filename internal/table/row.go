@@ -351,6 +351,13 @@ func (t *Table) selectRows(columns []string, colEquals []ColEq) ([][]string, err
 		}
 	}
 
+	type indexCandidate struct {
+		filter ColEq
+		index  *btree.Index
+		key    uint64
+		count  uint64
+	}
+	candidates := make([]indexCandidate, 0, len(colEquals))
 	for _, filter := range colEquals {
 		if filter.ColIdx == 0 {
 			continue
@@ -363,13 +370,38 @@ func (t *Table) selectRows(columns []string, colEquals []ColEq) ([][]string, err
 		if err != nil {
 			return nil, fmt.Errorf("select from table %q: invalid indexed value for column %q: %w", t.Name, t.cols[filter.ColIdx], err)
 		}
-		rids, err := index.FindAll(key)
-		if errors.Is(err, btree.ErrKeyNotFound) {
-			return result, nil
+		candidates = append(candidates, indexCandidate{filter: filter, index: index, key: key})
+	}
+	if len(candidates) > 0 {
+		best := 0
+		var rids []btree.RID
+		if len(candidates) == 1 {
+			rids, err = candidates[0].index.FindAll(candidates[0].key)
+			if err != nil {
+				if errors.Is(err, btree.ErrKeyNotFound) {
+					return result, nil
+				}
+				return nil, fmt.Errorf("select from table %q index %q: %w", t.Name, t.cols[candidates[0].filter.ColIdx], err)
+			}
+		} else {
+			for i := range candidates {
+				candidates[i].count, err = candidates[i].index.CountAll(candidates[i].key)
+				if err != nil {
+					if errors.Is(err, btree.ErrKeyNotFound) {
+						return result, nil
+					}
+					return nil, fmt.Errorf("select from table %q index %q: %w", t.Name, t.cols[candidates[i].filter.ColIdx], err)
+				}
+				if candidates[i].count < candidates[best].count {
+					best = i
+				}
+			}
+			rids, err = candidates[best].index.FindAll(candidates[best].key)
+			if err != nil {
+				return nil, fmt.Errorf("select from table %q index %q: %w", t.Name, t.cols[candidates[best].filter.ColIdx], err)
+			}
 		}
-		if err != nil {
-			return nil, fmt.Errorf("select from table %q index %q: %w", t.Name, t.cols[filter.ColIdx], err)
-		}
+		filter := candidates[best].filter
 		pages := make(map[uint32]*pager.Page)
 		for _, rid := range rids {
 			pageID := rid.GetPageID()
@@ -394,7 +426,7 @@ func (t *Table) selectRows(columns []string, colEquals []ColEq) ([][]string, err
 					return nil, fmt.Errorf("select from table %q: stale index %q points to row with value %q", t.Name, t.cols[filter.ColIdx], row[filter.ColIdx])
 				}
 				rowKey, err := t.indexKey(t.colTypes[filter.ColIdx], row[filter.ColIdx])
-				if err != nil || rowKey != key {
+				if err != nil || rowKey != candidates[best].key {
 					return nil, fmt.Errorf("select from table %q: stale index %q points to row with value %q", t.Name, t.cols[filter.ColIdx], row[filter.ColIdx])
 				}
 			}
