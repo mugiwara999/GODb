@@ -466,7 +466,10 @@ func (ind *Index) FindLeaf(key uint64) (searchPath []uint32, page *BTreePage, er
 			return nil, nil, err
 		}
 
-		pageId := node.GetChild(pos)
+		pageId, err := node.GetChild(pos)
+		if err != nil {
+			return nil, nil, err
+		}
 
 		node, err = ind.GetPage(pageId)
 
@@ -665,7 +668,10 @@ func (ind *Index) SplitInternalPage(p *BTreePage) (ascendKey uint64, newPage *BT
 	numKeys := newPage.GetNumKeys()
 
 	for i := 0; i <= int(numKeys); i++ {
-		pageID := newPage.GetChild(uint32(i))
+		pageID, err := newPage.GetChild(uint32(i))
+		if err != nil {
+			return 0, nil, err
+		}
 		childPage, err := ind.GetPage(pageID)
 
 		if err != nil {
@@ -1260,7 +1266,11 @@ func readInternal(p *BTreePage) ([]uint32, []uint64, error) {
 	children := make([]uint32, n+1)
 	keys := make([]uint64, n)
 	for i := range children {
-		children[i] = p.GetChild(uint32(i))
+		child, err := p.GetChild(uint32(i))
+		if err != nil {
+			return nil, nil, err
+		}
+		children[i] = child
 	}
 	for i := range keys {
 		key, err := p.GetKey(i)
@@ -1323,7 +1333,11 @@ func (ind *Index) subtreeMin(pageID uint32) (uint64, error) {
 		return 0, err
 	}
 	for page.NodeType() == InternalNode {
-		page, err = ind.GetPage(page.GetChild(0))
+		childID, err := page.GetChild(0)
+		if err != nil {
+			return 0, err
+		}
+		page, err = ind.GetPage(childID)
 		if err != nil {
 			return 0, err
 		}
@@ -1463,7 +1477,10 @@ func (ind *Index) rebalanceLeaf(leaf *BTreePage) error {
 func (ind *Index) rebalanceInternal(node *BTreePage) error {
 	if node.ID == ind.rootPageID {
 		if node.GetNumKeys() == 0 {
-			childID := node.GetChild(0)
+			childID, err := node.GetChild(0)
+			if err != nil {
+				return err
+			}
 			child, err := ind.GetPage(childID)
 			if err != nil {
 				return err
@@ -1713,7 +1730,11 @@ func (ind *Index) PrintTree() error {
 		fmt.Println()
 
 		queue = queue[1:]
-		queue = append(queue, ind.GetChildren(current)...)
+		children, err := ind.GetChildren(current)
+		if err != nil {
+			return err
+		}
+		queue = append(queue, children...)
 
 	}
 
@@ -1721,25 +1742,33 @@ func (ind *Index) PrintTree() error {
 
 }
 
-func (ind *Index) GetChildren(b *BTreePage) []*BTreePage {
+func (ind *Index) GetChildren(b *BTreePage) ([]*BTreePage, error) {
+	if b == nil {
+		return nil, fmt.Errorf("get children: nil page")
+	}
 	if b.NodeType() == LeafNode {
-		return nil
+		return nil, nil
+	}
+	if b.NodeType() != InternalNode {
+		return nil, fmt.Errorf("get children from page %d: invalid node type %d", b.ID, b.NodeType())
 	}
 
 	numKeys := b.GetNumKeys()
 	children := make([]*BTreePage, numKeys+1)
 
 	for i := 0; i <= numKeys; i++ {
-		childID := b.GetChild(uint32(i))
-		page, _ := ind.GetPage(childID)
-
-		if page == nil {
-			continue
+		childID, err := b.GetChild(uint32(i))
+		if err != nil {
+			return nil, err
+		}
+		page, err := ind.GetPage(childID)
+		if err != nil {
+			return nil, fmt.Errorf("read child page %d of page %d: %w", childID, b.ID, err)
 		}
 		children[i] = page
 	}
 
-	return children
+	return children, nil
 }
 
 func (ind *Index) Name() (string, error) {
@@ -1773,7 +1802,11 @@ func (ind *Index) FindLeftMostLeaf() (*BTreePage, error) {
 			return nil, fmt.Errorf("internal node %d has no keys", root.ID)
 		}
 
-		root, err = ind.GetPage(root.GetChild(0))
+		childID, err := root.GetChild(0)
+		if err != nil {
+			return nil, err
+		}
+		root, err = ind.GetPage(childID)
 
 		if err != nil {
 			return nil, err
@@ -2027,7 +2060,10 @@ func (ind *Index) validateNode(node *BTreePage, minKey, maxKey uint64, level int
 			return fmt.Errorf("internal node %d has too many keys: %d", node.ID, numKeys)
 		}
 
-		leftMostChild := node.GetChild(0)
+		leftMostChild, err := node.GetChild(0)
+		if err != nil {
+			return err
+		}
 		leftMostPage, err := ind.GetPage(leftMostChild)
 
 		if err != nil {
@@ -2045,7 +2081,10 @@ func (ind *Index) validateNode(node *BTreePage, minKey, maxKey uint64, level int
 		}
 
 		for i := 0; i < int(numKeys); i++ {
-			child := node.GetChild(uint32(i + 1))
+			child, err := node.GetChild(uint32(i + 1))
+			if err != nil {
+				return err
+			}
 			childPage, err := ind.GetPage(child)
 
 			if err != nil {

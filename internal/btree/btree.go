@@ -363,12 +363,25 @@ func (b *BTreePage) SetPostingRID(i int, rid RID) {
 	binary.LittleEndian.PutUint16(b.Data[offset+4:offset+6], rid.slotID)
 }
 
-func (b *BTreePage) GetChild(i uint32) uint32 {
+func (b *BTreePage) GetChild(i uint32) (uint32, error) {
+	if b == nil {
+		return 0, fmt.Errorf("get child: nil page")
+	}
+	if b.NodeType() != InternalNode {
+		return 0, fmt.Errorf("get child from page %d: expected internal node, got %d", b.ID, b.NodeType())
+	}
+	numKeys := b.GetNumKeys()
+	if numKeys > MaxKeysPerInternal {
+		return 0, fmt.Errorf("get child from page %d: corrupt key count %d", b.ID, numKeys)
+	}
+	if i > uint32(numKeys) {
+		return 0, fmt.Errorf("get child %d from page %d: child index out of range [0, %d]", i, b.ID, numKeys)
+	}
 	if i == 0 {
-		return binary.LittleEndian.Uint32(b.Data[7:11])
+		return binary.LittleEndian.Uint32(b.Data[7:11]), nil
 	}
 	offset := InternalHeaderSize + (i-1)*InternalEntrySize
-	return binary.LittleEndian.Uint32(b.Data[offset+InternalKeySize:])
+	return binary.LittleEndian.Uint32(b.Data[offset+InternalKeySize:]), nil
 }
 
 func (b *BTreePage) moveHalfKeysToLeaf(newPage *BTreePage) {

@@ -249,8 +249,60 @@ func TestBTreePointerSettersCheckPageType(t *testing.T) {
 	if err := internal.SetLeftmostChild(31); err != nil {
 		t.Fatal(err)
 	}
-	if got := internal.GetChild(0); got != 31 {
+	got, err := internal.GetChild(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != 31 {
 		t.Fatalf("leftmost child = %d, want 31", got)
+	}
+}
+
+func TestBTreeGetChildValidatesPageAndIndex(t *testing.T) {
+	var nilPage *BTreePage
+	if _, err := nilPage.GetChild(0); err == nil {
+		t.Fatal("GetChild accepted a nil page")
+	}
+	tests := []struct {
+		name  string
+		page  *BTreePage
+		index uint32
+	}{
+		{name: "leaf node", page: func() *BTreePage { p := &BTreePage{ID: 1}; InitLeafPage(p); return p }(), index: 0},
+		{name: "invalid node type", page: &BTreePage{ID: 2, Data: [PAGE_SIZE]byte{0xff}}, index: 0},
+		{name: "past child count", page: func() *BTreePage { p := &BTreePage{ID: 3}; InitInternalPage(p); p.SetNumKeys(1); return p }(), index: 2},
+		{name: "maximum uint32", page: func() *BTreePage { p := &BTreePage{ID: 4}; InitInternalPage(p); return p }(), index: ^uint32(0)},
+		{name: "corrupt count", page: func() *BTreePage {
+			p := &BTreePage{ID: 5}
+			InitInternalPage(p)
+			p.SetNumKeys(MaxKeysPerInternal + 1)
+			return p
+		}(), index: 0},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			before := test.page.Data
+			if _, err := test.page.GetChild(test.index); err == nil {
+				t.Fatal("GetChild accepted malformed page or index")
+			}
+			if test.page.Data != before {
+				t.Fatal("failed GetChild mutated page")
+			}
+		})
+	}
+
+	internal := &BTreePage{ID: 6}
+	InitInternalPage(internal)
+	internal.SetNumKeys(1)
+	if err := internal.SetLeftmostChild(31); err != nil {
+		t.Fatal(err)
+	}
+	binary.LittleEndian.PutUint32(internal.Data[InternalHeaderSize+InternalKeySize:InternalHeaderSize+InternalEntrySize], 32)
+	for i, want := range []uint32{31, 32} {
+		got, err := internal.GetChild(uint32(i))
+		if err != nil || got != want {
+			t.Fatalf("GetChild(%d) = %d, %v; want %d", i, got, err, want)
+		}
 	}
 }
 
@@ -719,7 +771,11 @@ func TestInvariantsAfterInsert(t *testing.T) {
 			if page.NodeType() == InternalNode {
 				numKeys := page.GetNumKeys()
 				for i := 0; i <= int(numKeys); i++ {
-					childID := page.GetChild(uint32(i))
+					childID, err := page.GetChild(uint32(i))
+					if err != nil {
+						t.Errorf("internal %d child index %d: %v", pageID, i, err)
+						continue
+					}
 					child, err := idx.GetPage(childID)
 					if err != nil {
 						t.Errorf("internal %d child %d: %v", pageID, childID, err)

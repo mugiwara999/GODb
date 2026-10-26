@@ -169,11 +169,19 @@ func TestFailedRootCollapseRestoresRootMetadataAndPages(t *testing.T) {
 	if root.NodeType() != InternalNode || root.GetNumKeys() != 1 {
 		t.Fatalf("prepared root type/count = %d/%d, want internal/1", root.NodeType(), root.GetNumKeys())
 	}
-	left, err := index.GetPage(root.GetChild(0))
+	leftChild, err := root.GetChild(0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	right, err := index.GetPage(root.GetChild(1))
+	left, err := index.GetPage(leftChild)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rightChild, err := root.GetChild(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	right, err := index.GetPage(rightChild)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -247,11 +255,19 @@ func TestFailedInternalMergeRestoresChildParentsAndRoot(t *testing.T) {
 	if root.NodeType() != InternalNode || root.GetNumKeys() != 1 {
 		t.Fatalf("prepared root type/count = %d/%d, want internal/1", root.NodeType(), root.GetNumKeys())
 	}
-	leftInternal, err := index.GetPage(root.GetChild(0))
+	leftChild, err := root.GetChild(0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	rightInternal, err := index.GetPage(root.GetChild(1))
+	leftInternal, err := index.GetPage(leftChild)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rightChild, err := root.GetChild(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rightInternal, err := index.GetPage(rightChild)
 	if err != nil {
 		t.Fatal(err)
 	}
