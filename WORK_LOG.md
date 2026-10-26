@@ -232,10 +232,10 @@
 
 - Priority: foundational schema support. Untyped text-only columns blocked validation of numeric values and any reliable numeric index semantics. Existing metadata version 1 had no type tags, so typed tables needed a separate version without making old tables unreadable.
 - Changes: added metadata v2 with one type tag per column, while v1 reads infer the generated `id` as `UINT64` and user columns as `TEXT`. Added `TEXT` and `UINT64` table columns through `CreateWithTypes` and SQL declarations; typed unsigned values are canonicalized to decimal on write and validated in filters, updates, reads, and primary-index validation. The CLI now accepts declarations such as `CREATE TABLE people (age UINT64, name TEXT)`. Untyped Create and SQL remain v1-compatible text schemas.
-- Regression coverage: v1 and v2 metadata round trips, invalid type tags/types, v2 ID type enforcement, typed insert/update/filter validation, numeric canonicalization, persisted reopen, malformed typed-row detection, SQL parser declarations, and CLI end-to-end typed CRUD.
+- Regression coverage: v1 and v2 metadata round trips (including case-insensitive inference of a legacy `ID`), invalid type tags/types, v2 ID type enforcement, typed insert/update/filter validation, numeric canonicalization, persisted reopen, malformed typed-row detection, SQL parser declarations, and CLI end-to-end typed CRUD.
 - Verification: initial targeted testing caught an out-of-memory regression because the new `GetSchema` path bypassed the bounded column-count accessor; it was corrected to use `GetNumCols`. Final `GOCACHE=/tmp/goDB-gocache go test ./...`, `GOCACHE=/tmp/goDB-gocache go build ./...`, `GOCACHE=/tmp/goDB-gocache go vet ./...`, race tests for pager/table/parser/cmd, Windows and Solaris cross-builds, and `git diff --check` passed.
 - Limitations: only `TEXT` and `UINT64` are supported; typed columns are not yet indexed, and v1 inference assumes the first stored column is the generated `id`.
-- Commit: pending.
+- Commit: `f46b882` (`Add backward-compatible typed columns`).
 
 ## Prioritized backlog
 
