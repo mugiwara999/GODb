@@ -42,6 +42,7 @@ type Journal struct {
 	file      *os.File
 	files     map[string]fileState
 	seen      map[pageRef]struct{}
+	fault     func(string) error
 	closed    bool
 	committed bool
 }
@@ -154,6 +155,20 @@ func (j *Journal) BeforePageWrite(path string, file *os.File, pageID, pageSize u
 }
 
 func (j *Journal) appendRecord(kind byte, payload []byte) error {
+	point := "record_unknown"
+	switch kind {
+	case recordFileStart:
+		point = "record_file_start"
+	case recordPageBefore:
+		point = "record_page_before"
+	case recordCommit:
+		point = "record_commit"
+	}
+	if j.fault != nil {
+		if err := j.fault(point); err != nil {
+			return err
+		}
+	}
 	if len(payload) > maxRecordSize {
 		return fmt.Errorf("journal record is too large: %d bytes", len(payload))
 	}
@@ -176,6 +191,11 @@ func (j *Journal) Commit() error {
 		return fmt.Errorf("journal %q is closed", j.path)
 	}
 	for path, state := range j.files {
+		if j.fault != nil {
+			if err := j.fault("sync_data_file"); err != nil {
+				return fmt.Errorf("injected data-file sync failure for %q: %w", path, err)
+			}
+		}
 		if err := state.file.Sync(); err != nil {
 			return fmt.Errorf("sync data file %q before commit: %w", path, err)
 		}

@@ -2,6 +2,7 @@ package wal
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -253,5 +254,64 @@ func TestRecoverTreatsTornCommitRecordAsUncommitted(t *testing.T) {
 	}
 	if !bytes.Equal(got, original) {
 		t.Fatal("torn commit record was treated as committed")
+	}
+}
+
+func TestInjectedJournalFailuresFailClosedOrRestoreOriginalPage(t *testing.T) {
+	for _, point := range []string{"record_page_before", "sync_data_file", "record_commit"} {
+		t.Run(point, func(t *testing.T) {
+			dir := t.TempDir()
+			dataPath := filepath.Join(dir, "table.db")
+			journalPath := dataPath + ".wal"
+			original := bytes.Repeat([]byte{0x4a}, 4096)
+			if err := os.WriteFile(dataPath, original, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			dataFile, err := os.OpenFile(dataPath, os.O_RDWR, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			j, err := Begin(journalPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			injected := errors.New("injected WAL I/O failure")
+			j.fault = func(at string) error {
+				if at == point {
+					return injected
+				}
+				return nil
+			}
+			beforeErr := j.BeforePageWrite(dataPath, dataFile, 0, 4096)
+			if point == "record_page_before" {
+				if !errors.Is(beforeErr, injected) {
+					t.Fatalf("BeforePageWrite error = %v, want injected failure", beforeErr)
+				}
+			} else {
+				if beforeErr != nil {
+					t.Fatalf("BeforePageWrite: %v", beforeErr)
+				}
+				changed := bytes.Repeat([]byte{0x5b}, 4096)
+				if _, err := dataFile.WriteAt(changed, 0); err != nil {
+					t.Fatal(err)
+				}
+				if err := j.Commit(); !errors.Is(err, injected) {
+					t.Fatalf("Commit error = %v, want injected failure", err)
+				}
+			}
+			if err := j.Rollback(); err != nil {
+				t.Fatalf("Rollback: %v", err)
+			}
+			if err := dataFile.Close(); err != nil {
+				t.Fatal(err)
+			}
+			got, err := os.ReadFile(dataPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(got, original) {
+				t.Fatalf("data differs from original after %s failure", point)
+			}
+		})
 	}
 }
