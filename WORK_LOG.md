@@ -589,9 +589,9 @@
 
 - Finding: Solaris fell through to the generic in-process mutex even though the Go Solaris syscall package provides blocking `fcntl` record locks. Separate goDB processes could therefore race on recovery and table/index mutations.
 - Changes: added an exclusive `F_SETLKW` record lock over the persistent `.lock` file, with an in-process mutex because POSIX record locks are process-associated. The generic fallback now excludes Solaris, and the existing child-process serialization test is enabled for Solaris.
-- Verification: Linux full tests, build, vet, and filelock race tests passed. All packages cross-compiled for Solaris with tests and for Windows filelock with tests. `go test -exec=true` only verifies cross-target test binaries compile; the Solaris child-process behavior has not been executed natively because no usable Solaris/illumos runtime is available.
+- Verification: Linux full tests, build, vet, and filelock race tests passed. All packages cross-compiled for Solaris with tests and for Windows filelock with tests. Hosted run `40280429232` passed tests, build, and vet on Ubuntu and Windows. `go test -exec=true` only verifies cross-target test binaries compile; the Solaris child-process behavior has not been executed natively because no usable Solaris/illumos runtime is available.
 - Limitations: process locking now uses the OS on Solaris, but durability and runtime behavior still need native Solaris/illumos validation. Closing any descriptor for a file can release process-associated `fcntl` locks, so all `.lock` file access must continue through `filelock`.
-- Commit: pending.
+- Commit: `95eba42` (`Add cross-process Solaris file locks`).
 
 ## Prioritized backlog
 
@@ -601,4 +601,4 @@
 
 ## Next action
 
-Next action: commit and push the Solaris lock change, confirm hosted Linux/Windows CI, then compare a bounded metadata-tail extension with a sidecar generation marker and define lock promotion/per-handle refresh ordering before implementing shared reads. Count setters are committed at `c4c5612`; leaf/posting links at `dca4a37`; parent pointers at `35a6a0c`; checked key-count reads at `b1ea467`; page accessor fuzzing at `7dcf560`; cross-page validation fuzzing at `e605cf5`; WAL parsing fuzzing at `b1d9bc7`; Windows cross-process locking at `19e5c33`. Hosted runs `40278741815`, `40278761020`, `40279132863`, and `40279746786` passed on Ubuntu and Windows. Preserve the supplied untracked `AGENTS.md`. Continue seeking a usable Solaris/illumos runtime.
+Next action: compare a bounded metadata-tail extension with a sidecar generation marker and define lock promotion/per-handle refresh ordering before implementing shared reads. Count setters are committed at `c4c5612`; leaf/posting links at `dca4a37`; parent pointers at `35a6a0c`; checked key-count reads at `b1ea467`; page accessor fuzzing at `7dcf560`; cross-page validation fuzzing at `e605cf5`; WAL parsing fuzzing at `b1d9bc7`; Windows cross-process locking at `19e5c33`; Solaris cross-process locking at `95eba42`. Hosted runs `40278741815`, `40278761020`, `40279132863`, `40279746786`, and `40280429232` passed on Ubuntu and Windows. Preserve the supplied untracked `AGENTS.md`. Continue seeking a usable Solaris/illumos runtime.
