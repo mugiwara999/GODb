@@ -270,7 +270,7 @@ func TestTypedRowCorruptionIsRejectedByReadersAndValidator(t *testing.T) {
 	}
 }
 
-func TestTypedUint64SecondaryIndexTracksMutationsAndReopens(t *testing.T) {
+func TestTypedSecondaryIndexesTrackMutationsAndReopens(t *testing.T) {
 	setupTableTest(t)
 	tbl, err := table.CreateWithTypes("indexed_people", []table.Column{
 		{Name: "age", Type: table.ColumnUint64},
@@ -299,8 +299,8 @@ func TestTypedUint64SecondaryIndexTracksMutationsAndReopens(t *testing.T) {
 	if err := tbl.CreateIndex("age"); !errors.Is(err, table.ErrIndexExists) {
 		t.Fatalf("duplicate CreateIndex error = %v, want ErrIndexExists", err)
 	}
-	if err := tbl.CreateIndex("name"); err == nil {
-		t.Fatal("CreateIndex accepted TEXT column")
+	if err := tbl.CreateIndex("name"); err != nil {
+		t.Fatalf("CreateIndex(TEXT): %v", err)
 	}
 	if err := tbl.CreateIndex("missing"); err == nil {
 		t.Fatal("CreateIndex accepted missing column")

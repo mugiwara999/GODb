@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 
 	"github.com/mugiwara999/goDB/internal/btree"
 	"github.com/mugiwara999/goDB/internal/filelock"
@@ -15,9 +14,10 @@ import (
 var ErrIndexExists = errors.New("index already exists")
 var ErrIndexNotFound = errors.New("index not found")
 
-// CreateIndex builds a non-unique index for a UINT64 column. It scans a stable
-// table image under the same process and filesystem locks used by mutations,
-// writes to a staging path, and publishes the complete index with one rename.
+// CreateIndex builds a non-unique index for a TEXT or UINT64 column. It scans
+// a stable table image under the same process and filesystem locks used by
+// mutations, writes to a staging path, and publishes the complete index with
+// one rename.
 func (t *Table) CreateIndex(column string) error {
 	if t == nil || t.Pager == nil {
 		return fmt.Errorf("create index: table is not open")
@@ -47,8 +47,8 @@ func (t *Table) CreateIndex(column string) error {
 	if columnIndex == 0 {
 		return fmt.Errorf("create index on table %q: generated primary key already has a unique index", t.Name)
 	}
-	if t.colTypes[columnIndex] != ColumnUint64 {
-		return fmt.Errorf("create index on table %q: column %q must have UINT64 type", t.Name, canonical)
+	if t.colTypes[columnIndex] != ColumnUint64 && t.colTypes[columnIndex] != ColumnText {
+		return fmt.Errorf("create index on table %q: column %q has unsupported type", t.Name, canonical)
 	}
 	if t.Indexes[canonical] != nil {
 		return fmt.Errorf("create index on table %q column %q: %w", t.Name, canonical, ErrIndexExists)
@@ -124,10 +124,10 @@ func (t *Table) CreateIndex(column string) error {
 			_ = index.Close()
 			return fmt.Errorf("scan table %q while building index %q: corrupt row: %w", t.Name, canonical, err)
 		}
-		key, err := strconv.ParseUint(row[columnIndex], 10, 64)
+		key, err := t.indexKey(t.colTypes[columnIndex], row[columnIndex])
 		if err != nil {
 			_ = index.Close()
-			return fmt.Errorf("scan table %q while building index %q: invalid UINT64 value: %w", t.Name, canonical, err)
+			return fmt.Errorf("scan table %q while building index %q: %w", t.Name, canonical, err)
 		}
 		info := rowIt.GetCurrentInfo()
 		if err := index.InsertDuplicate(key, uint32(info.PageID), uint16(info.SlotID)); err != nil {
@@ -169,7 +169,7 @@ func (t *Table) CreateIndex(column string) error {
 	return nil
 }
 
-// DropIndex removes a secondary UINT64 index by clearing its catalog bit
+// DropIndex removes a secondary index by clearing its catalog bit
 // before unlinking the index file. A crash after the bit is cleared leaves
 // only an ignored orphan, never a catalog entry pointing to a missing file.
 func (t *Table) DropIndex(column string) error {
@@ -205,8 +205,8 @@ func (t *Table) dropIndex(column string, removeFile func(string) error, syncDir 
 	if columnIndex == 0 {
 		return fmt.Errorf("drop index on table %q: generated primary index cannot be dropped", t.Name)
 	}
-	if t.colTypes[columnIndex] != ColumnUint64 {
-		return fmt.Errorf("drop index on table %q: column %q is not UINT64", t.Name, canonical)
+	if t.colTypes[columnIndex] != ColumnUint64 && t.colTypes[columnIndex] != ColumnText {
+		return fmt.Errorf("drop index on table %q: column %q has unsupported type", t.Name, canonical)
 	}
 	lock, err := filelock.Acquire(t.Path + ".lock")
 	if err != nil {
@@ -304,7 +304,7 @@ func (t *Table) refreshIndexes() error {
 	}
 	t.indexedCols = indexedCols
 	for columnIndex, column := range t.cols {
-		if columnIndex > 0 && t.colTypes[columnIndex] != ColumnUint64 {
+		if columnIndex > 0 && indexedCols == nil && t.colTypes[columnIndex] != ColumnUint64 {
 			continue
 		}
 		if columnIndex > 0 && indexedCols != nil && !indexedCols[columnIndex] {
@@ -358,11 +358,11 @@ func (t *Table) maintainSecondaryIndexes(oldRow, newRow []string, oldPage uint32
 		if index == nil || (oldRow[columnIndex] == newRow[columnIndex] && oldPage == newPage && oldSlot == newSlot) {
 			continue
 		}
-		oldKey, err := strconv.ParseUint(oldRow[columnIndex], 10, 64)
+		oldKey, err := t.indexKey(t.colTypes[columnIndex], oldRow[columnIndex])
 		if err != nil {
 			return fmt.Errorf("read old index key for column %q: %w", t.cols[columnIndex], err)
 		}
-		newKey, err := strconv.ParseUint(newRow[columnIndex], 10, 64)
+		newKey, err := t.indexKey(t.colTypes[columnIndex], newRow[columnIndex])
 		if err != nil {
 			return fmt.Errorf("read new index key for column %q: %w", t.cols[columnIndex], err)
 		}

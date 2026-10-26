@@ -115,7 +115,7 @@ func (t *Table) validatePrimaryIndex() error {
 	return nil
 }
 
-// ValidateIndexes checks each open secondary UINT64 index against the live
+// ValidateIndexes checks each open secondary index against the live
 // rows, including both missing and stale key/RID associations.
 func (t *Table) ValidateIndexes() error {
 	if t == nil || t.Pager == nil {
@@ -156,7 +156,7 @@ func (t *Table) ValidateIndexes() error {
 			if err != nil {
 				return fmt.Errorf("validate secondary index %q: corrupt row: %w", column, err)
 			}
-			key, err := strconv.ParseUint(row[columnIndex], 10, 64)
+			key, err := t.indexKey(t.colTypes[columnIndex], row[columnIndex])
 			if err != nil {
 				return fmt.Errorf("validate secondary index %q: invalid key %q: %w", column, row[columnIndex], err)
 			}

@@ -73,10 +73,13 @@ func TestCommandLoopCreatesTypedColumnsAndValidatesValues(t *testing.T) {
 		"INSERT INTO people VALUES 00042, 'Ada'",
 		"INSERT INTO people VALUES 42, 'Grace'",
 		"CREATE INDEX ON people(age)",
+		"CREATE INDEX ON people(name)",
 		"SELECT age FROM people WHERE age=42",
+		"SELECT name FROM people WHERE name='Grace'",
 		"INSERT INTO people VALUES invalid, 'Grace'",
 		"UPDATE people SET age=43 WHERE name='Ada'",
 		"DROP INDEX ON people(age)",
+		"DROP INDEX ON people(name)",
 		"SELECT age FROM people WHERE age=00043",
 	}, "\n")
 	var output bytes.Buffer
@@ -84,6 +87,7 @@ func TestCommandLoopCreatesTypedColumnsAndValidatesValues(t *testing.T) {
 	got := output.String()
 	for _, expected := range []string{
 		"age\n42\n",
+		"name\nGrace\n",
 		"invalid UINT64 value \"invalid\"",
 		"age\n43\n",
 	} {
@@ -102,6 +106,9 @@ func TestCommandLoopCreatesTypedColumnsAndValidatesValues(t *testing.T) {
 	}
 	if tbl.Indexes["age"] != nil {
 		t.Fatal("dropped age index was reopened")
+	}
+	if tbl.Indexes["name"] != nil {
+		t.Fatal("dropped TEXT index was reopened")
 	}
 	rows, err := tbl.Select([]string{"age", "name"}, nil)
 	if err != nil {

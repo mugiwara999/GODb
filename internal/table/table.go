@@ -30,6 +30,7 @@ type Table struct {
 	mutationMu  sync.Mutex
 	poisoned    bool
 	closed      bool
+	textKey     func(string) uint64
 }
 
 type ColumnType = pager.ColumnType
@@ -105,7 +106,7 @@ func openTable(name, path string) (*Table, error) {
 	idxs := make(map[string]*btree.Index)
 
 	for i, col := range cols {
-		if i > 0 && colTypes[i] != pager.ColumnTypeUint64 {
+		if i > 0 && indexedCols == nil && colTypes[i] != pager.ColumnTypeUint64 {
 			continue
 		}
 		if i > 0 && indexedCols != nil && !indexedCols[i] {

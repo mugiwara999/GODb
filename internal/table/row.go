@@ -218,7 +218,7 @@ func (t *Table) insert(values []string) error {
 		if index == nil {
 			continue
 		}
-		key, err := strconv.ParseUint(values[columnIndex], 10, 64)
+		key, err := t.indexKey(t.colTypes[columnIndex], values[columnIndex])
 		if err != nil {
 			return fmt.Errorf("insert into table %q: invalid indexed value for column %q: %w", t.Name, t.cols[columnIndex], err)
 		}
@@ -359,7 +359,7 @@ func (t *Table) selectRows(columns []string, colEquals []ColEq) ([][]string, err
 		if index == nil {
 			continue
 		}
-		key, err := strconv.ParseUint(filter.Value, 10, 64)
+		key, err := t.indexKey(t.colTypes[filter.ColIdx], filter.Value)
 		if err != nil {
 			return nil, fmt.Errorf("select from table %q: invalid indexed value for column %q: %w", t.Name, t.cols[filter.ColIdx], err)
 		}
@@ -390,7 +390,13 @@ func (t *Table) selectRows(columns []string, colEquals []ColEq) ([][]string, err
 				return nil, fmt.Errorf("select from table %q: corrupt indexed row: %w", t.Name, err)
 			}
 			if row[filter.ColIdx] != filter.Value {
-				return nil, fmt.Errorf("select from table %q: stale index %q points to row with value %q", t.Name, t.cols[filter.ColIdx], row[filter.ColIdx])
+				if t.colTypes[filter.ColIdx] != ColumnText {
+					return nil, fmt.Errorf("select from table %q: stale index %q points to row with value %q", t.Name, t.cols[filter.ColIdx], row[filter.ColIdx])
+				}
+				rowKey, err := t.indexKey(t.colTypes[filter.ColIdx], row[filter.ColIdx])
+				if err != nil || rowKey != key {
+					return nil, fmt.Errorf("select from table %q: stale index %q points to row with value %q", t.Name, t.cols[filter.ColIdx], row[filter.ColIdx])
+				}
 			}
 			match := true
 			for _, other := range colEquals {
@@ -514,7 +520,7 @@ func (t *Table) delete(filters []ColEq) error {
 				if secondary == nil {
 					continue
 				}
-				key, err := strconv.ParseUint(row[columnIndex], 10, 64)
+				key, err := t.indexKey(t.colTypes[columnIndex], row[columnIndex])
 				if err != nil {
 					return fmt.Errorf("delete from table %q: invalid indexed value for column %q: %w", t.Name, t.cols[columnIndex], err)
 				}

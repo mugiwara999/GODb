@@ -826,11 +826,45 @@ func TestIndexCatalogUpgradesV2AndRoundTrips(t *testing.T) {
 	if err := pg.SetColumnIndexed(0, true); err == nil {
 		t.Fatal("SetColumnIndexed accepted generated ID")
 	}
-	if err := pg.SetColumnIndexed(2, true); err == nil {
-		t.Fatal("SetColumnIndexed accepted TEXT column")
+	if err := pg.SetColumnIndexed(2, true); err != nil {
+		t.Fatalf("SetColumnIndexed(TEXT): %v", err)
 	}
-	if err := pg.SetIndexCatalog([]bool{false, false, true}); err == nil {
-		t.Fatal("SetIndexCatalog accepted a TEXT index flag")
+	page, err = pg.GetPage(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := binary.LittleEndian.Uint16(page.Data[4:6]); got != pager.MetadataVersionV4 {
+		t.Fatalf("metadata version after TEXT index = %d, want v4", got)
+	}
+	flags, err = pg.GetIndexedColumns()
+	if err != nil || !flags[2] {
+		t.Fatalf("GetIndexedColumns after TEXT index = %v, %v; want TEXT flag set", flags, err)
+	}
+}
+
+func TestTextIndexCatalogUpgradesLegacyV1Schema(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy-text-index.bin")
+	pg, err := pager.CreatePager(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pg.Close()
+	if err := pg.WriteColumns([]string{"id", "name"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := pg.SetColumnIndexed(1, true); err != nil {
+		t.Fatalf("SetColumnIndexed on v1 metadata: %v", err)
+	}
+	cols, types, err := pg.GetSchema()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !equalStrings(cols, []string{"id", "name"}) || len(types) != 2 || types[0] != pager.ColumnTypeUint64 || types[1] != pager.ColumnTypeText {
+		t.Fatalf("upgraded schema = %q types %v", cols, types)
+	}
+	flags, err := pg.GetIndexedColumns()
+	if err != nil || len(flags) != 2 || !flags[1] {
+		t.Fatalf("upgraded catalog = %v, %v; want TEXT index", flags, err)
 	}
 }
 
