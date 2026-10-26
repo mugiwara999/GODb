@@ -358,7 +358,7 @@
 - Regression coverage: parser cases for update/delete ranges; a command-loop test covering indexed range updates, range deletes, equality plus range predicates, reopen, and index validation; WAL rollback test injecting failure after range update page/index writes and verifying rows and indexes are restored.
 - Verification: full tests, build, vet, race tests for table/pager/B+ tree/WAL/parser/lexer/CLI, Windows and Solaris cross-builds, and `git diff --check` passed. Parser verification initially caught empty equality filters represented as nonnil on range-only statements; the parser now preserves nil for absent equality filters, and all checks passed after that correction.
 - Limitations: range mutations currently scan rows even when the ranged column has an index. This keeps matching and mutation behavior simple; range-index candidate collection should be benchmarked before optimizing.
-- Commit: pending.
+- Commit: `11448e1` (`Add range predicates to mutations`).
 
 ## Prioritized backlog
 
