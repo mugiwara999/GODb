@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"slices"
 	"strings"
@@ -12,26 +13,30 @@ import (
 )
 
 func main() {
-	scanner := bufio.NewScanner(os.Stdin)
-	fmt.Println("DB is starting")
-	fmt.Print(">")
+	run(os.Stdin, os.Stdout)
+}
+
+func run(input io.Reader, output io.Writer) {
+	scanner := bufio.NewScanner(input)
+	fmt.Fprintln(output, "DB is starting")
+	fmt.Fprint(output, ">")
 
 	for scanner.Scan() {
 		command := strings.TrimSpace(scanner.Text())
 		if command == "" {
-			fmt.Print(">")
+			fmt.Fprint(output, ">")
 			continue
 		}
 
 		query, err := parser.Parse(command)
 		if err != nil {
-			fmt.Println(err)
-			fmt.Print(">")
+			fmt.Fprintln(output, err)
+			fmt.Fprint(output, ">")
 			continue
 		}
 
 		if query == nil {
-			fmt.Print(">")
+			fmt.Fprint(output, ">")
 			continue
 		}
 
@@ -39,76 +44,76 @@ func main() {
 		case "create":
 			tbl, err := table.Create(query.Table, query.Columns)
 			if err != nil {
-				fmt.Println(err)
+				fmt.Fprintln(output, err)
 				break
 			}
 			if err := tbl.Close(); err != nil {
-				fmt.Println(err)
+				fmt.Fprintln(output, err)
 			}
 
 		case "insert", "select", "delete", "update":
 			tbl, err := table.Open(query.Table)
 			if err != nil {
-				fmt.Println(err)
+				fmt.Fprintln(output, err)
 				break
 			}
 
 			switch query.Type {
 			case "insert":
 				if err := tbl.Insert(query.Values); err != nil {
-					fmt.Println(err)
+					fmt.Fprintln(output, err)
 				}
 			case "select":
 				filters, err := resolveFilters(tbl, query.Filters)
 				if err != nil {
-					fmt.Println(err)
+					fmt.Fprintln(output, err)
 					break
 				}
 				res, err := tbl.Select(query.Columns, filters)
 				if err != nil {
-					fmt.Println(err)
+					fmt.Fprintln(output, err)
 					break
 				}
 				for _, row := range res {
-					fmt.Println(strings.Join(row, ","))
+					fmt.Fprintln(output, strings.Join(row, ","))
 				}
 			case "delete":
 				filters, err := resolveFilters(tbl, query.Filters)
 				if err != nil {
-					fmt.Println(err)
+					fmt.Fprintln(output, err)
 					break
 				}
 				if err := tbl.Delete(filters); err != nil {
-					fmt.Println(err)
+					fmt.Fprintln(output, err)
 				}
 			case "update":
 				filters, err := resolveFilters(tbl, query.Filters)
 				if err != nil {
-					fmt.Println(err)
+					fmt.Fprintln(output, err)
 					break
 				}
 				updates, err := resolveUpdates(tbl, query.Updates)
 				if err != nil {
-					fmt.Println(err)
+					fmt.Fprintln(output, err)
 					break
 				}
 				if err := tbl.Update(filters, updates); err != nil {
-					fmt.Println(err)
+					fmt.Fprintln(output, err)
 				}
 			}
 
 			if err := tbl.Close(); err != nil {
-				fmt.Println(err)
+				fmt.Fprintln(output, err)
 			}
 		default:
-			fmt.Printf("unsupported query type %q\n", query.Type)
+			fmt.Fprintf(output, "unsupported query type %q\n", query.Type)
 		}
 
-		fmt.Print(">")
+		fmt.Fprint(output, ">")
 	}
 
 	if err := scanner.Err(); err != nil {
-		fmt.Println(table.ErrorTakingInput, err)
+		fmt.Fprintln(output, table.ErrorTakingInput, err)
 	}
 }
 

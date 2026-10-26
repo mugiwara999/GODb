@@ -210,7 +210,6 @@ func OpenIndex(tableName, colName string) (*Index, error) {
 			return openError(fmt.Errorf("free-list head page %d has node type %d", freePageID, freePage.NodeType()))
 		}
 	}
-	fmt.Printf("Opened index %s_%s.idx, size=%d, rootPage=%d, numPages=%d\n", tableName, colName, fi.Size(), rootPageID, numPages)
 	return index, nil
 
 }
