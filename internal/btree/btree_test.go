@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"math"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -13,6 +14,93 @@ import (
 
 	"github.com/mugiwara999/goDB/internal/wal"
 )
+
+func TestBTreeLeafSettersValidateBoundsAndPageType(t *testing.T) {
+	tests := []struct {
+		name  string
+		page  *BTreePage
+		index int
+	}{
+		{name: "nil page", page: nil, index: 0},
+		{name: "internal page", page: func() *BTreePage {
+			page := &BTreePage{ID: 1}
+			InitInternalPage(page)
+			return page
+		}(), index: 0},
+		{name: "invalid node type", page: func() *BTreePage {
+			page := &BTreePage{ID: 2}
+			page.Data[0] = 0xff
+			return page
+		}(), index: 0},
+		{name: "negative index", page: func() *BTreePage {
+			page := &BTreePage{ID: 3}
+			InitLeafPage(page)
+			return page
+		}(), index: -1},
+		{name: "index past capacity", page: func() *BTreePage {
+			page := &BTreePage{ID: 4}
+			InitLeafPage(page)
+			return page
+		}(), index: MaxKeysPerLeaf},
+		{name: "maximum integer index", page: func() *BTreePage {
+			page := &BTreePage{ID: 5}
+			InitLeafPage(page)
+			return page
+		}(), index: math.MaxInt},
+		{name: "corrupt key count", page: func() *BTreePage {
+			page := &BTreePage{ID: 6}
+			InitLeafPage(page)
+			page.SetNumKeys(uint16(MaxKeysPerLeaf + 1))
+			return page
+		}(), index: 0},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name+"/SetKey", func(t *testing.T) {
+			var before [PAGE_SIZE]byte
+			if test.page != nil {
+				before = test.page.Data
+			}
+			if err := test.page.SetKey(test.index, 42); err == nil {
+				t.Fatal("SetKey succeeded for invalid page or index")
+			}
+			if test.page != nil && test.page.Data != before {
+				t.Fatal("failed SetKey mutated page")
+			}
+		})
+		t.Run(test.name+"/SetRID", func(t *testing.T) {
+			var before [PAGE_SIZE]byte
+			if test.page != nil {
+				before = test.page.Data
+			}
+			if err := test.page.SetRID(test.index, RID{pageID: 42, slotID: 7}); err == nil {
+				t.Fatal("SetRID succeeded for invalid page or index")
+			}
+			if test.page != nil && test.page.Data != before {
+				t.Fatal("failed SetRID mutated page")
+			}
+		})
+	}
+}
+
+func TestBTreeLeafSettersWriteLastPhysicalEntry(t *testing.T) {
+	page := &BTreePage{ID: 7}
+	InitLeafPage(page)
+	index := MaxKeysPerLeaf - 1
+	if err := page.SetKey(index, 99); err != nil {
+		t.Fatalf("SetKey at last physical entry: %v", err)
+	}
+	wantRID := RID{pageID: 123, slotID: 17}
+	if err := page.SetRID(index, wantRID); err != nil {
+		t.Fatalf("SetRID at last physical entry: %v", err)
+	}
+	if got := page.GetKey(index); got != 99 {
+		t.Fatalf("last entry key = %d, want 99", got)
+	}
+	if got := page.GetRID(index); *got != wantRID {
+		t.Fatalf("last entry RID = %+v, want %+v", *got, wantRID)
+	}
+}
 
 func withIndex(t *testing.T, colName string, fn func(*Index)) {
 	t.Helper()

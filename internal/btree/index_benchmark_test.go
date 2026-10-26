@@ -143,7 +143,9 @@ func benchmarkDuplicateIndex(b *testing.B, totalRIDs int) *Index {
 		tail = page
 		offset += count
 	}
-	leaf.SetRID(0, RID{pageID: head.ID, slotID: PostingMarkerSlot})
+	if err := leaf.SetRID(0, RID{pageID: head.ID, slotID: PostingMarkerSlot}); err != nil {
+		b.Fatal(err)
+	}
 	if err := idx.WritePage(leaf); err != nil {
 		b.Fatal(err)
 	}

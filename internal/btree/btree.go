@@ -186,19 +186,42 @@ func (b *BTreePage) GetRID(i int) *RID {
 
 }
 
-func (b *BTreePage) SetKey(i int, key uint64) {
+func (b *BTreePage) SetKey(i int, key uint64) error {
+	if err := b.validateLeafWriteIndex(i); err != nil {
+		return err
+	}
 	offset := LeafHeaderSize + i*LeafEntrySize
 
 	binary.LittleEndian.PutUint64(b.Data[offset:offset+LeafKeyOffset], key)
+	return nil
 }
 
-func (b *BTreePage) SetRID(i int, id RID) {
+func (b *BTreePage) SetRID(i int, id RID) error {
+	if err := b.validateLeafWriteIndex(i); err != nil {
+		return err
+	}
 
 	offset := LeafHeaderSize + i*LeafEntrySize
 
 	binary.LittleEndian.PutUint32(b.Data[offset+LeafKeyOffset:offset+LeafPageIdOffset], id.pageID)
 	binary.LittleEndian.PutUint16(b.Data[offset+LeafPageIdOffset:offset+LeafSlotIdOffset], id.slotID)
+	return nil
+}
 
+func (b *BTreePage) validateLeafWriteIndex(i int) error {
+	if b == nil {
+		return fmt.Errorf("write leaf entry: nil page")
+	}
+	if b.NodeType() != LeafNode {
+		return fmt.Errorf("write leaf entry on page %d: expected leaf node, got %d", b.ID, b.NodeType())
+	}
+	if b.GetNumKeys() > MaxKeysPerLeaf {
+		return fmt.Errorf("write leaf entry on page %d: corrupt key count %d", b.ID, b.GetNumKeys())
+	}
+	if i < 0 || i >= MaxKeysPerLeaf {
+		return fmt.Errorf("write leaf entry %d on page %d: index out of capacity [0, %d)", i, b.ID, MaxKeysPerLeaf)
+	}
+	return nil
 }
 
 func (b *BTreePage) InsertIntoLeafAt(pos int, key uint64, id RID, numKeys int) {

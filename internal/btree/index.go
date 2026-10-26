@@ -861,7 +861,9 @@ func (ind *Index) InsertDuplicate(key uint64, pageID uint32, slotID uint16) erro
 			if err := ind.WritePage(posting); err != nil {
 				return fmt.Errorf("write posting page %d: %w", posting.ID, err)
 			}
-			leaf.SetRID(i, RID{pageID: posting.ID, slotID: PostingMarkerSlot})
+			if err := leaf.SetRID(i, RID{pageID: posting.ID, slotID: PostingMarkerSlot}); err != nil {
+				return err
+			}
 			return ind.WritePage(leaf)
 		}
 
@@ -1005,7 +1007,9 @@ func (ind *Index) DeleteRID(key uint64, pageID uint32, slotID uint16) error {
 		if len(rids) == 0 {
 			return ind.Delete(key)
 		} else if len(rids) == 1 {
-			leaf.SetRID(i, rids[0])
+			if err := leaf.SetRID(i, rids[0]); err != nil {
+				return err
+			}
 			if err := ind.WritePage(leaf); err != nil {
 				return err
 			}
@@ -1119,7 +1123,9 @@ func (ind *Index) UpdateRID(key uint64, pageID uint32, slotID uint16) error {
 		if leaf.GetRID(i).slotID == PostingMarkerSlot {
 			return fmt.Errorf("key %d has multiple RIDs; update the intended RID with DeleteRID and InsertDuplicate", key)
 		}
-		leaf.SetRID(i, RID{pageID: pageID, slotID: slotID})
+		if err := leaf.SetRID(i, RID{pageID: pageID, slotID: slotID}); err != nil {
+			return err
+		}
 		if err := ind.WritePage(leaf); err != nil {
 			return fmt.Errorf("write RID update for key %d: %w", key, err)
 		}
