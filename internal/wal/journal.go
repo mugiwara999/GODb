@@ -10,6 +10,8 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/mugiwara999/goDB/internal/dirsync"
 )
 
 const (
@@ -499,10 +501,5 @@ func writeAtFull(file *os.File, data []byte, offset int64) error {
 }
 
 func syncDirectory(path string) error {
-	dir, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer dir.Close()
-	return dir.Sync()
+	return dirsync.Sync(path)
 }

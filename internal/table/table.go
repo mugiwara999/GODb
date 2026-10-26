@@ -12,6 +12,7 @@ import (
 
 	"github.com/joho/godotenv"
 	"github.com/mugiwara999/goDB/internal/btree"
+	"github.com/mugiwara999/goDB/internal/dirsync"
 	"github.com/mugiwara999/goDB/internal/filelock"
 	"github.com/mugiwara999/goDB/internal/lexer"
 	"github.com/mugiwara999/goDB/internal/pager"
@@ -551,12 +552,7 @@ func pathExists(path string) (bool, error) {
 }
 
 func syncDirectory(path string) error {
-	dir, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer dir.Close()
-	return dir.Sync()
+	return dirsync.Sync(path)
 }
 
 func (t *Table) Close() error {
