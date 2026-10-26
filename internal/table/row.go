@@ -142,22 +142,6 @@ func (t *Table) insert(values []string) error {
 		return indexErr
 	}
 
-	// TODO: It requires values[] to be someStruct[] with types
-	// for _, idx := range t.Indexes {
-	// 	name := idx.Name()
-	// 	if name == "id" {
-	// 		continue
-	// 	}
-	//
-	// 	colIdx := -1
-	//
-	// 	for i, v := range t.cols {
-	// 		if name == v {
-	// 			idx.Insert(uint64(values[i]), uint32(lastPage.ID), uint16(slotID))
-	// 		}
-	// 	}
-	//
-	// }
 	return nil
 }
 
@@ -350,24 +334,6 @@ func (t *Table) delete(filters []ColEq) error {
 	return nil
 }
 
-// TODO:
-// 2. Mutation during iteration in Update
-//
-// When the new row has a different length, you delete the old row and call
-// t.Insert(row). The insertion adds a new row at the end of the file (possibly
-// on the current page if there’s room). The iterator’s pageID may still be
-// that same page, and after the insertion the numSlots increases. On the next
-// Next() call, the iterator sees the new slot and processes the same logical
-// row again – leading to double updates.
-// This is a classic problem: mutating a collection while iterating over it.
-// For a learning DB, you could:
-//
-//	Collect all changes in a first pass and apply them in a second pass, or
-//
-//	Immediately mark the old row as deleted and insert the new one, but make
-//	the iterator use a snapshot of page IDs / slot counts at the start.
-//	Worth understanding and fixing.
-
 func (t *Table) Update(filters []ColEq, toUpdate []UpdateValue) error {
 	return t.mutate(func() error { return t.update(filters, toUpdate) })
 }
@@ -394,6 +360,7 @@ func (t *Table) update(filters []ColEq, toUpdate []UpdateValue) error {
 		oldRID *btree.RID
 	}
 	var changes []change
+	// Collect matches first so relocated rows cannot extend the active scan.
 	rowIt := t.Pager.RowIterator()
 
 	for {

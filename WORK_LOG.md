@@ -202,6 +202,14 @@
 - Limitations: legacy mixed-case metadata is normalized only in memory; older tables containing duplicate, reserved, or otherwise unaddressable columns are rejected and require manual repair.
 - Commits: `e21b439` (`Validate SQL table and column identifiers`) and `73ec01f` (persisted-schema validation follow-up).
 
+### Remove outdated row-mutation notes
+
+- Priority: maintainability. A comment still described update relocation as an unresolved iterator-mutation bug even though `Update` now gathers matching rows before applying changes. A second commented-out block suggested index maintenance that could not run with the current schema/index model.
+- Changes: removed the stale `Update` TODO and abandoned secondary-index stub; added a short explanation beside the existing two-pass scan.
+- Regression coverage: the existing row-relocation update test covers the behavior described by the removed TODO.
+- Verification: full `GOCACHE=/tmp/goDB-gocache go test ./...` and `git diff --check` passed.
+- Commit: pending.
+
 ## Prioritized backlog
 
 1. **Define a typed value model and duplicate-key index representation.** Current columns have no types and the B+ tree maps unique `uint64` keys to one RID. This blocks useful secondary indexes because repeated arbitrary string values cannot be represented or compared with stable semantics. Dependencies: schema metadata/versioning and WAL-backed migration or a clear compatibility strategy. Risks: changing existing table/index formats and maintaining multiple RIDs per key. Acceptance: document supported types, key ordering, duplicate behavior, and migration compatibility before exposing secondary-index DDL; add format and recovery tests as part of implementation.
