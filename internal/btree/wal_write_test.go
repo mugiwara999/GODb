@@ -143,3 +143,85 @@ func TestFailedLeafRebalanceRestoresAllWrittenPages(t *testing.T) {
 		t.Fatalf("Validate after failed rebalance: %v", err)
 	}
 }
+
+func TestFailedRootCollapseRestoresRootMetadataAndPages(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("DATA_DIR", dir)
+	index, err := NewIndex("wal_root_collapse", "id")
+	if err != nil {
+		t.Fatalf("NewIndex: %v", err)
+	}
+	defer index.Close()
+	for key := 0; key <= MaxKeysPerLeaf; key++ {
+		if err := index.Insert(uint64(key), uint32(key), 0); err != nil {
+			t.Fatalf("Insert(%d): %v", key, err)
+		}
+	}
+	for key := MaxKeysPerLeaf; key >= MaxKeysPerLeaf-1; key-- {
+		if err := index.Delete(uint64(key)); err != nil {
+			t.Fatalf("shrink right leaf at key %d: %v", key, err)
+		}
+	}
+	root, err := index.GetRootPage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if root.NodeType() != InternalNode || root.GetNumKeys() != 1 {
+		t.Fatalf("prepared root type/count = %d/%d, want internal/1", root.NodeType(), root.GetNumKeys())
+	}
+	left, err := index.GetPage(root.GetChild(0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	right, err := index.GetPage(root.GetChild(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if left.GetNumKeys() != MinKeysPerLeaf || right.GetNumKeys() != MinKeysPerLeaf {
+		t.Fatalf("prepared leaf counts = %d/%d, want %d/%d", left.GetNumKeys(), right.GetNumKeys(), MinKeysPerLeaf, MinKeysPerLeaf)
+	}
+
+	journal, err := wal.Begin(index.path + ".wal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	index.SetJournal(journal)
+	writes := 0
+	index.writeAtFn = func(data []byte, offset int64) (int, error) {
+		writes++
+		if writes == 6 { // root metadata is written after the merged leaf and parent
+			return index.file.WriteAt(data[:len(data)/2], offset)
+		}
+		return index.file.WriteAt(data, offset)
+	}
+	if err := index.Delete(0); !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("Delete error = %v, want io.ErrShortWrite", err)
+	}
+	if writes < 6 {
+		t.Fatalf("page writes before injected failure = %d, want at least 6", writes)
+	}
+	if err := journal.Rollback(); err != nil {
+		t.Fatalf("Rollback: %v", err)
+	}
+	index.SetJournal(nil)
+	index.writeAtFn = nil
+	if err := index.Refresh(); err != nil {
+		t.Fatalf("Refresh after rollback: %v", err)
+	}
+	if err := index.Validate(); err != nil {
+		t.Fatalf("Validate after root-collapse rollback: %v", err)
+	}
+	root, err = index.GetRootPage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if root.NodeType() != InternalNode || root.GetNumKeys() != 1 {
+		t.Fatalf("root after rollback type/count = %d/%d, want internal/1", root.NodeType(), root.GetNumKeys())
+	}
+	if _, err := index.Find(0); err != nil {
+		t.Fatalf("Find key 0 after rollback: %v", err)
+	}
+	if _, err := index.Find(uint64(MaxKeysPerLeaf)); !errors.Is(err, ErrKeyNotFound) {
+		t.Fatalf("Find previously deleted maximum key error = %v, want key not found", err)
+	}
+}

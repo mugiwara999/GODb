@@ -246,6 +246,10 @@ func (j *Journal) CloseUncommitted() error {
 }
 
 func Recover(path string) error {
+	return recoverWith(path, nil)
+}
+
+func recoverWith(path string, fault func(string, *os.File, []byte, int64) error) error {
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		return fmt.Errorf("resolve journal path %q: %w", path, err)
@@ -271,9 +275,15 @@ func Recover(path string) error {
 				return fmt.Errorf("open %q during recovery: %w", page.path, err)
 			}
 			offset := int64(page.id) * int64(page.size)
-			if err := writeAtFull(file, page.data, offset); err != nil {
+			var restoreErr error
+			if fault != nil {
+				restoreErr = fault("restore_page", file, page.data, offset)
+			} else {
+				restoreErr = writeAtFull(file, page.data, offset)
+			}
+			if restoreErr != nil {
 				_ = file.Close()
-				return fmt.Errorf("restore %q page %d: %w", page.path, page.id, err)
+				return fmt.Errorf("restore %q page %d: %w", page.path, page.id, restoreErr)
 			}
 			if err := file.Close(); err != nil {
 				return fmt.Errorf("close recovered file %q: %w", page.path, err)
@@ -283,6 +293,12 @@ func Recover(path string) error {
 			file, err := os.OpenFile(filePath, os.O_RDWR, 0)
 			if err != nil {
 				return fmt.Errorf("open %q to restore file size: %w", filePath, err)
+			}
+			if fault != nil {
+				if err := fault("truncate_file", file, nil, originalSize); err != nil {
+					_ = file.Close()
+					return fmt.Errorf("restore size of %q: %w", filePath, err)
+				}
 			}
 			if err := file.Truncate(originalSize); err != nil {
 				_ = file.Close()

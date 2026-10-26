@@ -315,3 +315,71 @@ func TestInjectedJournalFailuresFailClosedOrRestoreOriginalPage(t *testing.T) {
 		})
 	}
 }
+
+func TestRecoveryCanBeRetriedAfterInjectedRestoreFailures(t *testing.T) {
+	for _, point := range []string{"restore_page", "truncate_file"} {
+		t.Run(point, func(t *testing.T) {
+			dir := t.TempDir()
+			dataPath := filepath.Join(dir, "table.db")
+			journalPath := dataPath + ".wal"
+			original := bytes.Repeat([]byte{0x71}, 4096)
+			if err := os.WriteFile(dataPath, original, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			dataFile, err := os.OpenFile(dataPath, os.O_RDWR, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			j, err := Begin(journalPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pageID := uint32(0)
+			if point == "truncate_file" {
+				pageID = 1
+			}
+			if err := j.BeforePageWrite(dataPath, dataFile, pageID, 4096); err != nil {
+				t.Fatal(err)
+			}
+			changed := bytes.Repeat([]byte{0x82}, 4096)
+			if _, err := dataFile.WriteAt(changed, int64(pageID)*4096); err != nil {
+				t.Fatal(err)
+			}
+			if err := j.CloseUncommitted(); err != nil {
+				t.Fatal(err)
+			}
+			if err := dataFile.Close(); err != nil {
+				t.Fatal(err)
+			}
+			injected := errors.New("injected recovery failure")
+			fault := func(at string, file *os.File, data []byte, offset int64) error {
+				if at != point {
+					return nil
+				}
+				if point == "restore_page" {
+					_, err := file.WriteAt(data[:len(data)/2], offset)
+					if err != nil {
+						return err
+					}
+				}
+				return injected
+			}
+			if err := recoverWith(journalPath, fault); !errors.Is(err, injected) {
+				t.Fatalf("first recovery error = %v, want injected failure", err)
+			}
+			if _, err := os.Stat(journalPath); err != nil {
+				t.Fatalf("journal removed after failed recovery: %v", err)
+			}
+			if err := Recover(journalPath); err != nil {
+				t.Fatalf("retry recovery: %v", err)
+			}
+			got, err := os.ReadFile(dataPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(got, original) {
+				t.Fatal("retry recovery did not restore original file")
+			}
+		})
+	}
+}
