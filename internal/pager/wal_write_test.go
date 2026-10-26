@@ -56,3 +56,45 @@ func TestFlushPartialWriteRollsBackFromJournalBeforeImage(t *testing.T) {
 		t.Fatal("partial pager write was not restored")
 	}
 }
+
+func TestNewPagePartialWriteRollbackTruncatesFileExtension(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "table.bin")
+	original := bytes.Repeat([]byte{0x61}, PAGE_SIZE)
+	if err := os.WriteFile(path, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pg, err := OpenPager(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pg.Close()
+	journal, err := wal.Begin(path + ".wal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pg.SetJournal(journal)
+	injected := errors.New("injected partial append")
+	pg.writeFn = func(file *os.File, page *Page) error {
+		_, err := file.WriteAt(page.Data[:PAGE_SIZE/2], int64(page.ID*PAGE_SIZE))
+		if err != nil {
+			return err
+		}
+		return injected
+	}
+	if _, err := pg.NewPage(); !errors.Is(err, injected) {
+		t.Fatalf("NewPage error = %v, want injected write error", err)
+	}
+	if err := journal.Rollback(); err != nil {
+		t.Fatalf("Rollback: %v", err)
+	}
+	pg.SetJournal(nil)
+	pg.writeFn = nil
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() != int64(PAGE_SIZE) {
+		t.Fatalf("file size after rollback = %d, want %d", info.Size(), PAGE_SIZE)
+	}
+}
