@@ -289,7 +289,7 @@
 - Environment assessment: Docker is available only for Linux (`docker info` reports `linux x86_64`); no Windows/Solaris images are present. QEMU is installed but no guest images or boot setup are available. Native runtime testing on those targets therefore remains unavailable here.
 - Verification: targeted failure-injection tests, full `GOCACHE=/tmp/goDB-gocache go test ./...`, build, vet, race tests for table/WAL/B+ tree/pager, Windows and Solaris cross-builds, and `git diff --check` passed.
 - Limitations: injected tests verify application recovery semantics on Linux, not each target filesystem's actual unlink and directory-sync guarantees.
-- Commit: pending.
+- Commit: `2bc9cd0` (`Test secondary index removal failures`).
 
 ## Prioritized backlog
 
