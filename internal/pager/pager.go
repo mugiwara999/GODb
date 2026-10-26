@@ -232,6 +232,16 @@ func (p *Pager) Close() error {
 	return nil
 }
 
+func (p *Pager) Sync() error {
+	if p == nil || p.file == nil {
+		return nil
+	}
+	if err := p.file.Sync(); err != nil {
+		return fmt.Errorf("sync pager %q: %w", p.path, err)
+	}
+	return nil
+}
+
 func (p *Pager) GetNumPages() int {
 	return p.numPages
 }

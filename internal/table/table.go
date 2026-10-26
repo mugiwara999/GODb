@@ -1,8 +1,10 @@
 package table
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,7 +30,10 @@ type Table struct {
 
 var (
 	ErrorTakingInput = errors.New("read user input")
+	ErrTableExists   = errors.New("table already exists")
 )
+
+var createMarkerMagic = []byte("GODBCREATE1\n")
 
 func Open(name string) (*Table, error) {
 	path, err := tablePath(name)
@@ -40,6 +45,9 @@ func Open(name string) (*Table, error) {
 		return nil, fmt.Errorf("open table %q: %w", name, err)
 	}
 	defer lock.Close()
+	if err := recoverCreate(path); err != nil {
+		return nil, fmt.Errorf("recover table creation for %q: %w", name, err)
+	}
 	if err := wal.Recover(path + ".wal"); err != nil {
 		return nil, fmt.Errorf("recover table %q: %w", name, err)
 	}
@@ -177,6 +185,7 @@ func (t *Table) reopenAfterRollback() error {
 }
 
 func Create(name string, cols []string) (*Table, error) {
+	name = strings.ToLower(name)
 	if len(cols) == 0 {
 		return nil, fmt.Errorf("create table %q: at least one column name is required", name)
 	}
@@ -190,44 +199,201 @@ func Create(name string, cols []string) (*Table, error) {
 		return nil, fmt.Errorf("create table %q: %w", name, err)
 	}
 	defer lock.Close()
+	if err := recoverCreate(path); err != nil {
+		return nil, fmt.Errorf("recover table creation for %q: %w", name, err)
+	}
+	indexPath := btree.IndexPath(name, "id")
+	for _, finalPath := range []string{path, indexPath} {
+		exists, err := pathExists(finalPath)
+		if err != nil {
+			return nil, fmt.Errorf("create table %q: check existing file %q: %w", name, finalPath, err)
+		}
+		if exists {
+			return nil, fmt.Errorf("create table %q: %w", name, ErrTableExists)
+		}
+	}
+	if err := removeCreateTemps(path, indexPath); err != nil {
+		return nil, fmt.Errorf("create table %q: remove stale staging files: %w", name, err)
+	}
+	return createTableFiles(name, cols, path, nil)
+}
 
-	pg, err := pager.CreatePager(path)
+// createTableFiles assumes the caller holds the table lock and has checked
+// that neither final file exists. The optional hook is used by package tests
+// to simulate interruption between publication steps.
+func createTableFiles(name string, cols []string, path string, afterStep func(string) error) (*Table, error) {
+	indexPath := btree.IndexPath(name, "id")
+	tableTemp := path + ".create-tmp"
+	indexTemp := indexPath + ".create-tmp"
+	markerPath := path + ".create"
+	markerTemp := markerPath + ".tmp"
+	cleanupTemps := func() error { return removePaths(tableTemp, indexTemp, markerTemp) }
+
+	pg, err := pager.CreatePager(tableTemp)
 	if err != nil {
-		return nil, fmt.Errorf("create table %q at %q: %w", name, path, err)
+		_ = cleanupTemps()
+		return nil, fmt.Errorf("create staged table %q at %q: %w", name, tableTemp, err)
 	}
 
-	cols = append([]string{"id"}, cols...)
+	closePager := func() error { return pg.Close() }
+	stagedCols := append([]string{"id"}, cols...)
 
-	if err := pg.WriteColumns(cols); err != nil {
-		_ = pg.Close()
-		return nil, fmt.Errorf("create table %q at %q: %w", name, path, err)
+	if err := pg.WriteColumns(stagedCols); err != nil {
+		_ = closePager()
+		_ = cleanupTemps()
+		return nil, fmt.Errorf("write staged table metadata for %q: %w", name, err)
 	}
 
-	idx, err := btree.NewIndex(name, "id")
-
+	idx, err := btree.NewIndexAt(name, "id", indexTemp)
 	if err != nil {
-		_ = pg.Close()
-		return nil, fmt.Errorf("create table %q at %q: %w", name, path, err)
+		_ = closePager()
+		_ = cleanupTemps()
+		return nil, fmt.Errorf("create staged primary index for %q: %w", name, err)
 	}
-
-	idxs := make(map[string]*btree.Index)
-	idxs["id"] = idx
-
-	lastID, err := pg.LastID()
-
+	if err := pg.Sync(); err != nil {
+		_ = idx.Close()
+		_ = closePager()
+		_ = cleanupTemps()
+		return nil, err
+	}
+	if err := idx.Sync(); err != nil {
+		_ = idx.Close()
+		_ = closePager()
+		_ = cleanupTemps()
+		return nil, err
+	}
+	idxCloseErr := idx.Close()
+	pageCloseErr := closePager()
+	if err := errors.Join(idxCloseErr, pageCloseErr); err != nil {
+		_ = cleanupTemps()
+		return nil, fmt.Errorf("close staged table files for %q: %w", name, err)
+	}
+	if err := writeCreateMarker(markerTemp, markerPath); err != nil {
+		_ = cleanupTemps()
+		return nil, fmt.Errorf("write create marker for %q: %w", name, err)
+	}
+	if err := runCreateStep(afterStep, "after_marker"); err != nil {
+		return nil, cleanupFailedCreate(path, err)
+	}
+	if err := os.Rename(tableTemp, path); err != nil {
+		return nil, cleanupFailedCreate(path, fmt.Errorf("publish table file: %w", err))
+	}
+	if err := runCreateStep(afterStep, "after_table_publish"); err != nil {
+		return nil, cleanupFailedCreate(path, err)
+	}
+	if err := os.Rename(indexTemp, indexPath); err != nil {
+		return nil, cleanupFailedCreate(path, fmt.Errorf("publish primary index: %w", err))
+	}
+	if err := runCreateStep(afterStep, "after_index_publish"); err != nil {
+		return nil, cleanupFailedCreate(path, err)
+	}
+	if err := syncDirectory(filepath.Dir(path)); err != nil {
+		return nil, cleanupFailedCreate(path, fmt.Errorf("sync published table files: %w", err))
+	}
+	if err := os.Remove(markerPath); err != nil {
+		return nil, cleanupFailedCreate(path, fmt.Errorf("remove create marker: %w", err))
+	}
+	if err := syncDirectory(filepath.Dir(path)); err != nil {
+		return nil, fmt.Errorf("sync completed table creation for %q: %w", name, err)
+	}
+	created, err := openTable(name, path)
 	if err != nil {
-		_ = pg.Close()
-		return nil, fmt.Errorf("create table %q at %q: %w", name, path, err)
+		return nil, fmt.Errorf("open newly created table %q: %w", name, err)
 	}
+	return created, nil
+}
 
-	return &Table{
-		Pager:   pg,
-		Name:    strings.ToLower(name),
-		Path:    path,
-		cols:    cols,
-		Indexes: idxs,
-		lastID:  lastID,
-	}, nil
+func runCreateStep(hook func(string) error, step string) error {
+	if hook == nil {
+		return nil
+	}
+	return hook(step)
+}
+
+func cleanupFailedCreate(path string, cause error) error {
+	if err := recoverCreate(path); err != nil {
+		return errors.Join(cause, fmt.Errorf("clean up interrupted create: %w", err))
+	}
+	return cause
+}
+
+func writeCreateMarker(tempPath, markerPath string) error {
+	file, err := os.OpenFile(tempPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	n, writeErr := file.Write(createMarkerMagic)
+	if writeErr == nil && n != len(createMarkerMagic) {
+		writeErr = io.ErrShortWrite
+	}
+	if writeErr == nil {
+		writeErr = file.Sync()
+	}
+	closeErr := file.Close()
+	if err := errors.Join(writeErr, closeErr); err != nil {
+		return err
+	}
+	if err := os.Rename(tempPath, markerPath); err != nil {
+		return err
+	}
+	return syncDirectory(filepath.Dir(markerPath))
+}
+
+func recoverCreate(path string) error {
+	markerPath := path + ".create"
+	marker, err := os.ReadFile(markerPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(marker, createMarkerMagic) {
+		return fmt.Errorf("invalid create marker %q", markerPath)
+	}
+	tableName := strings.TrimSuffix(filepath.Base(path), ".bin")
+	indexPath := btree.IndexPath(tableName, "id")
+	if err := removePaths(path, indexPath, path+".create-tmp", indexPath+".create-tmp", markerPath+".tmp"); err != nil {
+		return err
+	}
+	if err := os.Remove(markerPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return syncDirectory(filepath.Dir(path))
+}
+
+func removeCreateTemps(path, indexPath string) error {
+	return removePaths(path+".create-tmp", indexPath+".create-tmp", path+".create.tmp")
+}
+
+func removePaths(paths ...string) error {
+	var errs []error
+	for _, path := range paths {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			errs = append(errs, fmt.Errorf("remove %q: %w", path, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func pathExists(path string) (bool, error) {
+	_, err := os.Lstat(path)
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	return false, err
+}
+
+func syncDirectory(path string) error {
+	dir, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
 }
 
 func (t *Table) Close() error {
@@ -264,7 +430,7 @@ func tablePath(name string) (string, error) {
 	_ = godotenv.Load()
 	dataDir := os.Getenv("DATA_DIR")
 	if dataDir == "" {
-		dataDir = "../data"
+		dataDir = "data"
 	}
 	return filepath.Join(dataDir, strings.ToLower(name)+".bin"), nil
 }

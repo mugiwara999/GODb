@@ -54,18 +54,28 @@ var ErrDuplicateKey = errors.New("duplicate key")
 // Next 4 bytes after the name: free-list head page ID (0 means no free pages)
 
 func NewIndex(tableName, colName string) (*Index, error) {
+	return NewIndexAt(tableName, colName, IndexPath(tableName, colName))
+}
+
+func IndexPath(tableName, colName string) string {
 
 	dir := os.Getenv("DATA_DIR")
 
 	if dir == "" {
-		dir = "/home/rahul/Projects/goDB/data"
+		dir = "data"
 	}
 
+	return filepath.Join(dir, fmt.Sprintf("%s_%s.idx", tableName, colName))
+}
+
+// NewIndexAt creates an index at a staging path while retaining its logical
+// table/column name in metadata. Table creation uses this before publishing
+// the file at its final path.
+func NewIndexAt(tableName, colName, path string) (*Index, error) {
 	name := tableName + "_" + colName
 	if 12+len(name)+4 > PAGE_SIZE {
 		return nil, fmt.Errorf("index name is too long: %d bytes", len(name))
 	}
-	path := filepath.Join(dir, fmt.Sprintf("%s_%s.idx", tableName, colName))
 	file, err := os.Create(path)
 
 	if err != nil {
@@ -90,13 +100,21 @@ func NewIndex(tableName, colName string) (*Index, error) {
 	n, err := file.Write(page.Data[:])
 
 	if n < PAGE_SIZE || err != nil {
-		return nil, fmt.Errorf("write meta page for column %q: %v", colName, err)
+		_ = file.Close()
+		if err == nil {
+			err = io.ErrShortWrite
+		}
+		return nil, fmt.Errorf("write meta page for column %q: %w", colName, err)
 	}
 
 	n, err = file.Write(rootPage.Data[:])
 
 	if n < PAGE_SIZE || err != nil {
-		return nil, fmt.Errorf("write root page for column %q: %v", colName, err)
+		_ = file.Close()
+		if err == nil {
+			err = io.ErrShortWrite
+		}
+		return nil, fmt.Errorf("write root page for column %q: %w", colName, err)
 	}
 
 	return &Index{
@@ -110,13 +128,7 @@ func NewIndex(tableName, colName string) (*Index, error) {
 }
 
 func OpenIndex(tableName, colName string) (*Index, error) {
-	dir := os.Getenv("DATA_DIR")
-
-	if dir == "" {
-		dir = "/home/rahul/Projects/goDB/data"
-	}
-
-	path := filepath.Join(dir, fmt.Sprintf("%s_%s.idx", tableName, colName))
+	path := IndexPath(tableName, colName)
 	file, err := os.OpenFile(path, os.O_RDWR, 0644)
 	if err != nil {
 		return nil, fmt.Errorf("open index file for column %q: %v", colName, err)
@@ -748,6 +760,16 @@ func (ind *Index) SetNumPages(n uint32) error {
 
 func (ind *Index) Close() error {
 	return ind.file.Close()
+}
+
+func (ind *Index) Sync() error {
+	if ind == nil || ind.file == nil {
+		return nil
+	}
+	if err := ind.file.Sync(); err != nil {
+		return fmt.Errorf("sync index %q: %w", ind.path, err)
+	}
+	return nil
 }
 
 func (ind *Index) Find(key uint64) (*RID, error) {

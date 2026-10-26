@@ -12,9 +12,16 @@ import (
 
 func withIndex(t *testing.T, colName string, fn func(*Index)) {
 	t.Helper()
-	// path := filepath.Join(colName)
-	idx, _ := NewIndex("test", colName)
-	defer idx.Close()
+	dataDir := filepath.Join(t.TempDir(), "data")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatalf("create data directory: %v", err)
+	}
+	t.Setenv("DATA_DIR", dataDir)
+	idx, err := NewIndex("test", colName)
+	if err != nil {
+		t.Fatalf("NewIndex: %v", err)
+	}
+	t.Cleanup(func() { _ = idx.Close() })
 	fn(idx)
 }
 
