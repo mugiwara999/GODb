@@ -384,3 +384,22 @@ func TestSelectByIDHandlesMissingAndDeletedRows(t *testing.T) {
 		t.Fatal("Select with invalid slot RID succeeded, want corruption error")
 	}
 }
+
+func TestOpenRejectsCorruptPrimaryIndex(t *testing.T) {
+	dataDir := setupTableTest(t)
+	tbl, err := table.Create("corrupt_primary", []string{"name"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := tbl.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	indexPath := filepath.Join(dataDir, "corrupt_primary_id.idx")
+	if err := os.WriteFile(indexPath, []byte("truncated"), 0o644); err != nil {
+		t.Fatalf("truncate primary index: %v", err)
+	}
+	if opened, err := table.Open("corrupt_primary"); err == nil {
+		_ = opened.Close()
+		t.Fatal("Open succeeded with a truncated primary index")
+	}
+}

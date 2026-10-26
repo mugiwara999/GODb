@@ -1,6 +1,7 @@
 package btree
 
 import (
+	"encoding/binary"
 	"errors"
 	"math/rand"
 	"os"
@@ -283,6 +284,83 @@ func TestOpenIndexWithoutFreeListMetadata(t *testing.T) {
 	}
 	if err := idx.Validate(); err != nil {
 		t.Fatalf("Validate legacy index after insert: %v", err)
+	}
+}
+
+func TestOpenIndexRejectsCorruptMetadataAndPages(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func([]byte) []byte
+	}{
+		{name: "truncated metadata", mutate: func(data []byte) []byte { return data[:100] }},
+		{name: "unaligned file size", mutate: func(data []byte) []byte { return append(data, 1) }},
+		{name: "page count mismatch", mutate: func(data []byte) []byte {
+			binary.LittleEndian.PutUint32(data[4:8], 3)
+			return data
+		}},
+		{name: "root outside page count", mutate: func(data []byte) []byte {
+			binary.LittleEndian.PutUint32(data[0:4], 2)
+			return data
+		}},
+		{name: "name length overflow", mutate: func(data []byte) []byte {
+			binary.LittleEndian.PutUint32(data[8:12], ^uint32(0))
+			return data
+		}},
+		{name: "free-list head out of range", mutate: func(data []byte) []byte {
+			offset := 12 + int(binary.LittleEndian.Uint32(data[8:12]))
+			binary.LittleEndian.PutUint32(data[offset:offset+4], 2)
+			return data
+		}},
+		{name: "invalid root type", mutate: func(data []byte) []byte {
+			data[PAGE_SIZE] = 9
+			return data
+		}},
+		{name: "root has parent", mutate: func(data []byte) []byte {
+			binary.LittleEndian.PutUint32(data[PAGE_SIZE+3:PAGE_SIZE+7], 9)
+			return data
+		}},
+		{name: "root key count overflow", mutate: func(data []byte) []byte {
+			binary.LittleEndian.PutUint16(data[PAGE_SIZE+1:PAGE_SIZE+3], uint16(MaxKeysPerLeaf+1))
+			return data
+		}},
+		{name: "free-list head is not free", mutate: func(data []byte) []byte {
+			data = append(data, make([]byte, PAGE_SIZE)...)
+			binary.LittleEndian.PutUint32(data[4:8], 3)
+			offset := 12 + int(binary.LittleEndian.Uint32(data[8:12]))
+			binary.LittleEndian.PutUint32(data[offset:offset+4], 2)
+			data[2*PAGE_SIZE] = byte(LeafNode)
+			return data
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dataDir := filepath.Join(t.TempDir(), "data")
+			if err := os.MkdirAll(dataDir, 0o755); err != nil {
+				t.Fatalf("create data directory: %v", err)
+			}
+			t.Setenv("DATA_DIR", dataDir)
+			idx, err := NewIndex("corrupt", "id")
+			if err != nil {
+				t.Fatalf("NewIndex: %v", err)
+			}
+			if err := idx.Close(); err != nil {
+				t.Fatalf("close fixture index: %v", err)
+			}
+			path := filepath.Join(dataDir, "corrupt_id.idx")
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read fixture index: %v", err)
+			}
+			if err := os.WriteFile(path, tt.mutate(data), 0o644); err != nil {
+				t.Fatalf("write corrupted fixture: %v", err)
+			}
+			opened, err := OpenIndex("corrupt", "id")
+			if err == nil {
+				_ = opened.Close()
+				t.Fatal("OpenIndex succeeded for corrupted file")
+			}
+		})
 	}
 }
 

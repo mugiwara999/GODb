@@ -111,44 +111,96 @@ func OpenIndex(tableName, colName string) (*Index, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open index file for column %q: %v", colName, err)
 	}
+	openError := func(err error) (*Index, error) {
+		_ = file.Close()
+		return nil, fmt.Errorf("open index %s_%s: %w", tableName, colName, err)
+	}
 
 	metaPage := [PAGE_SIZE]byte{}
 
 	_, err = file.ReadAt(metaPage[:], 0)
 
 	if err != nil {
-		return nil, err
+		return openError(fmt.Errorf("read metadata page: %w", err))
 	}
 
 	rootPageID := binary.LittleEndian.Uint32(metaPage[0:4])
 
 	numPages := binary.LittleEndian.Uint32(metaPage[4:8])
+	if numPages < 2 {
+		return openError(fmt.Errorf("invalid page count %d", numPages))
+	}
+	if rootPageID == 0 || rootPageID >= numPages {
+		return openError(fmt.Errorf("root page ID %d is out of bounds for %d pages", rootPageID, numPages))
+	}
 	nameLen := binary.LittleEndian.Uint32(metaPage[8:12])
 	if uint64(nameLen)+16 > PAGE_SIZE {
-		_ = file.Close()
-		return nil, fmt.Errorf("index metadata name length %d exceeds page capacity", nameLen)
+		return openError(fmt.Errorf("metadata name length %d exceeds page capacity", nameLen))
 	}
 	freeHeadOffset := 12 + int(nameLen)
 	freePageID := binary.LittleEndian.Uint32(metaPage[freeHeadOffset : freeHeadOffset+4])
+	if freePageID != 0 && (freePageID >= numPages || freePageID == rootPageID) {
+		return openError(fmt.Errorf("free-list head %d is out of bounds for %d pages", freePageID, numPages))
+	}
 
-	fi, _ := file.Stat()
-	fmt.Printf("Opened index %s_%s.idx, size=%d, rootPage=%d, numPages=%d\n", tableName, colName, fi.Size(), rootPageID, numPages)
-	return &Index{
+	fi, err := file.Stat()
+	if err != nil {
+		return openError(fmt.Errorf("stat index file: %w", err))
+	}
+	if fi.Size()%PAGE_SIZE != 0 {
+		return openError(fmt.Errorf("file size %d is not a multiple of page size %d", fi.Size(), PAGE_SIZE))
+	}
+	wantSize := int64(numPages) * int64(PAGE_SIZE)
+	if fi.Size() != wantSize {
+		return openError(fmt.Errorf("file size %d does not match metadata page count %d (expected %d bytes)", fi.Size(), numPages, wantSize))
+	}
+
+	index := &Index{
 		file:           file,
 		rootPageID:     rootPageID,
 		numPages:       numPages,
 		freePageID:     freePageID,
 		freeHeadOffset: freeHeadOffset,
-	}, nil
+	}
+	root, err := index.GetPage(rootPageID)
+	if err != nil {
+		return openError(fmt.Errorf("read root page %d: %w", rootPageID, err))
+	}
+	if root.NodeType() != LeafNode && root.NodeType() != InternalNode {
+		return openError(fmt.Errorf("root page %d has invalid node type %d", rootPageID, root.NodeType()))
+	}
+	if root.ParentID() != 0 {
+		return openError(fmt.Errorf("root page %d has parent page %d", rootPageID, root.ParentID()))
+	}
+	if root.GetNumKeys() > MaxKeysPerLeaf && root.NodeType() == LeafNode || root.GetNumKeys() > MaxKeysPerInternal && root.NodeType() == InternalNode {
+		return openError(fmt.Errorf("root page %d has invalid key count %d", rootPageID, root.GetNumKeys()))
+	}
+	if root.NodeType() == InternalNode && root.GetNumKeys() == 0 {
+		return openError(fmt.Errorf("internal root page %d has no keys", rootPageID))
+	}
+	if freePageID != 0 {
+		freePage, err := index.GetPage(freePageID)
+		if err != nil {
+			return openError(fmt.Errorf("read free-list head page %d: %w", freePageID, err))
+		}
+		if freePage.NodeType() != FreeNode {
+			return openError(fmt.Errorf("free-list head page %d has node type %d", freePageID, freePage.NodeType()))
+		}
+	}
+	fmt.Printf("Opened index %s_%s.idx, size=%d, rootPage=%d, numPages=%d\n", tableName, colName, fi.Size(), rootPageID, numPages)
+	return index, nil
 
 }
 
 func (ind *Index) GetPage(id uint32) (*BTreePage, error) {
-	offset := id * PAGE_SIZE
+	if id >= ind.numPages {
+		return nil, fmt.Errorf("page ID %d is out of bounds (numPages=%d)", id, ind.numPages)
+	}
+	offset := int64(id) * int64(PAGE_SIZE)
 
 	data := [PAGE_SIZE]byte{}
 
-	n, err := ind.file.ReadAt(data[:], int64(offset))
+	n, err := ind.file.ReadAt(data[:], offset)
 
 	if n < PAGE_SIZE {
 		return nil, fmt.Errorf("only %d  bytes read", n)
@@ -567,7 +619,10 @@ func (ind *Index) SplitInternalPage(p *BTreePage) (ascendKey uint64, newPage *BT
 }
 
 func (ind *Index) WritePage(p *BTreePage) error {
-	offset := int64(p.ID) * PAGE_SIZE
+	if p.ID >= ind.numPages {
+		return fmt.Errorf("page ID %d is out of bounds (numPages=%d)", p.ID, ind.numPages)
+	}
+	offset := int64(p.ID) * int64(PAGE_SIZE)
 	_, err := ind.file.WriteAt(p.Data[:], offset)
 	return err
 }

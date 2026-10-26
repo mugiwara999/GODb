@@ -46,6 +46,13 @@ func Open(name string) (*Table, error) {
 	for _, col := range cols {
 		idx, err := btree.OpenIndex(name, col)
 		if err != nil {
+			if col == "id" {
+				for _, opened := range idxs {
+					_ = opened.Close()
+				}
+				_ = pg.Close()
+				return nil, fmt.Errorf("open table %q primary index: %w", name, err)
+			}
 			continue
 		}
 		idxs[col] = idx

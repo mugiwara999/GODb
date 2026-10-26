@@ -80,14 +80,22 @@
 - Limitations: rebalancing writes multiple pages and metadata without a WAL, so a process or I/O failure mid-delete can still leave a partially applied tree mutation. Crash-safe table/index mutations remain a separate task.
 - Commit: `3b2b181` (`Rebalance B-tree deletions and reuse pages`).
 
+### Reject malformed B+ tree metadata when opening indexes
+
+- Priority: storage integrity. `OpenIndex` previously trusted root IDs, page counts, free-list heads, and name lengths; `GetPage` also allowed out-of-range IDs and multiplied offsets before widening them.
+- Changes: opening now validates metadata bounds, root/free-page IDs, exact file/page-count agreement, root header type/parent/key count, and free-list-head type. `GetPage` and `WritePage` reject page IDs outside the allocated range and calculate offsets in `int64`. Legacy indexes with zeroed unused free-list bytes remain supported. `Table.Open` now surfaces a malformed primary `id` index rather than silently returning a table with no primary index.
+- Regression coverage: malformed/truncated metadata, misaligned files, page-count mismatch, invalid root IDs/types/parents/counts, and bad free-list heads are rejected; a legacy no-free-list index opens and remains usable. Table reopen reports corrupt primary-index errors.
+- Verification: `GOCACHE=/tmp/goDB-gocache go test ./...`, `go build ./...`, `go vet ./...`, and `git diff --check` passed.
+- Limitations: open-time checks validate the root and free-list head but do not recursively validate the whole tree, avoiding a full index scan on every open. Call `Validate` for a complete structural audit.
+- Commit: pending.
+
 ## Prioritized backlog
 
 1. **Add crash-safe table and index mutations.** Insert/update/delete write table pages, metadata, and indexes separately, and B+ tree rebalancing adds multi-page delete updates. A WAL or another recovery design is needed. Risks include defining log ordering and recovery for existing files. Acceptance: injected failures at each write boundary recover to a consistent table/index state after reopen. Tests should cover insert, update, delete, root collapse, and incomplete/corrupt log handling.
-2. **Validate and harden B+ tree file metadata.** `OpenIndex` still trusts root/page counts, free-list head, and some file-size relationships. Malformed metadata can lead to invalid reads or panic paths. Acceptance: malformed/truncated metadata returns contextual errors without panic; root and free-page pointers are range checked; tests cover old files without a free list and malformed empty/populated indexes.
-3. **Make B+ tree validation safe for concurrent indexes.** `Validate` uses the package-global `visitedPages` slice, so validating separate indexes concurrently can race and overwrite traversal state. Acceptance: traversal state is local to each validation call and parallel validation of independent indexes passes `go test -race`. Tests should validate several indexes concurrently, including one with free pages.
-4. **Add SQL/parser integration tests and usability documentation.** Parser/lexer lack test files despite supporting CREATE/INSERT/SELECT/DELETE/UPDATE. Acceptance: valid and malformed statements are covered, including EOF and separator edge cases; docs show supported syntax and error behavior.
-5. **Measure storage and index performance.** Existing insertion tests exercise large inputs but provide no benchmark baseline. Acceptance: reproducible benchmarks cover table insert/select and B+ tree insert/find with stated data sizes and report allocations before optimization proposals.
+2. **Make B+ tree validation safe for concurrent indexes.** `Validate` uses the package-global `visitedPages` slice, so validating separate indexes concurrently can race and overwrite traversal state. Acceptance: traversal state is local to each validation call and parallel validation of independent indexes passes `go test -race`. Tests should validate several indexes concurrently, including one with free pages.
+3. **Add SQL/parser integration tests and usability documentation.** Parser/lexer lack test files despite supporting CREATE/INSERT/SELECT/DELETE/UPDATE. Acceptance: valid and malformed statements are covered, including EOF and separator edge cases; docs show supported syntax and error behavior.
+4. **Measure storage and index performance.** Existing insertion tests exercise large inputs but provide no benchmark baseline. Acceptance: reproducible benchmarks cover table insert/select and B+ tree insert/find with stated data sizes and report allocations before optimization proposals.
 
 ## Next action
 
-Next task: harden B+ tree metadata validation for root, page count, file size, and free-list pointers while retaining compatibility with pre-free-list index files. Preserve the supplied untracked `AGENTS.md`.
+Next task: remove package-global state from B+ tree validation, then run parallel validator tests under the race detector. Preserve the supplied untracked `AGENTS.md`.
