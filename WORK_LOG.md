@@ -469,6 +469,7 @@
 - Regression coverage: nil page; invalid and posting node types; negative, past-count, and MaxInt indexes; corrupt leaf/internal counts; valid leaf/internal reads; and no mutation after failed access.
 - Verification: baseline full tests/build/vet passed before changes. After changes, `go test ./... -count=1`, `go build ./...`, `go vet ./...`, and `git diff --check` passed. B-tree and table tests passed; B-tree and table race tests passed; Windows and Solaris package test binaries cross-compiled and were exercised with `go test -exec=true`; `git diff --check` passed.
 - Limitations: `GetRID` and `GetChild` remain unchecked and are the next accessor audit. Native Solaris runtime coverage is still unavailable.
+- Commit: `0fcfcd5` (`Bounds-check B-tree key reads`).
 
 ## Prioritized backlog
 
