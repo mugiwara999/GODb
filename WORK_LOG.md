@@ -478,6 +478,7 @@
 - Regression coverage: nil page; internal and invalid node types; negative, past-count, and MaxInt indexes; corrupt count; no mutation on failure; last-slot RID round trip remains covered.
 - Verification: focused B-tree/table tests, full `go test ./... -count=1`, build, vet, and diff check passed. B-tree/table race tests passed; Windows and Solaris package test binaries cross-compiled with `go test -exec=true`. Hosted run `40267794308` passed Ubuntu tests/build/vet; the Windows job was still running at checkpoint time.
 - Limitations: `GetChild` remains unchecked and is the next accessor audit. Native Solaris runtime coverage is unavailable.
+- Commit: `7b991cb` (`Bounds-check B-tree RID reads`).
 
 ## Prioritized backlog
 
