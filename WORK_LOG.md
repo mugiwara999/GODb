@@ -533,7 +533,7 @@
 - Regression coverage: nil and wrong-type pages, corrupt posting counts, valid link round trips, and no mutation after failed posting-link writes.
 - Verification: focused and full tests, build, vet, B-tree/table race tests, Windows and Solaris test-binary cross-target checks, and `git diff --check` passed.
 - Limitations: native Solaris runtime coverage remains unavailable. Parent pointer accessors and `GetNumKeys` still read/write fixed offsets without checked APIs; page ID validity is checked by chain traversal context.
-- Commit: pending.
+- Commit: `dca4a37` (`Validate B-tree link accessors`).
 
 ## Prioritized backlog
 
@@ -544,4 +544,4 @@
 
 ## Next action
 
-Next task: finish verification and commit the leaf/posting link accessor changes, then assess checked `GetNumKeys` and parent pointer APIs. Validated count setters are committed at `c4c5612`; hosted run `40269136559` passed at `8da9a35`. Preserve the supplied untracked `AGENTS.md`. Separately continue seeking a usable Solaris/illumos runtime; Windows native storage tests pass in hosted CI.
+Next task: assess checked `GetNumKeys` and parent pointer APIs. Validated count setters are committed at `c4c5612`; leaf/posting link accessors are committed at `dca4a37`. Hosted run `40269136559` passed at `8da9a35`; CI for `dca4a37` is pending. Preserve the supplied untracked `AGENTS.md`. Separately continue seeking a usable Solaris/illumos runtime; Windows native storage tests pass in hosted CI.
