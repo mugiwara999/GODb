@@ -226,7 +226,7 @@
 - Regression coverage: corrupt the persisted count to `math.MaxUint32` and verify both `GetNumCols` and `GetColumns` return `ErrMetadataCorrupt`.
 - Verification: targeted pager metadata corruption tests, full `GOCACHE=/tmp/goDB-gocache go test ./...`, `GOCACHE=/tmp/goDB-gocache go build ./...`, `GOCACHE=/tmp/goDB-gocache go vet ./...`, `GOCACHE=/tmp/goDB-gocache go test -race ./internal/pager ./internal/table`, and `git diff --check` passed.
 - Limitations: the bound uses the current v1 layout where names start at `ColNamesOffset`; a versioned schema layout must apply its own bound accounting for type metadata.
-- Commit: pending.
+- Commit: `a662200` (`Bound metadata column counts before allocation`).
 
 ## Prioritized backlog
 
