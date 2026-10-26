@@ -344,11 +344,24 @@ func (b *BTreePage) IncrementNumKeys() error {
 	return nil
 }
 
-// SetNumKeys writes the serialized count without validating it. Split and
-// rebalance helpers derive the value from checked page contents; tests may use
-// it to construct malformed pages for corruption checks.
-func (b *BTreePage) SetNumKeys(n uint16) {
+func (b *BTreePage) SetNumKeys(n uint16) error {
+	if b == nil {
+		return fmt.Errorf("set key count: nil page")
+	}
+	maxKeys := 0
+	switch b.NodeType() {
+	case LeafNode:
+		maxKeys = MaxKeysPerLeaf
+	case InternalNode:
+		maxKeys = MaxKeysPerInternal
+	default:
+		return fmt.Errorf("set key count on page %d: invalid node type %d", b.ID, b.NodeType())
+	}
+	if int(n) > maxKeys {
+		return fmt.Errorf("set key count on page %d: count %d exceeds maximum %d", b.ID, n, maxKeys)
+	}
 	binary.LittleEndian.PutUint16(b.Data[1:3], n)
+	return nil
 }
 
 func (b *BTreePage) GetParentID() uint32 {
@@ -381,8 +394,18 @@ func (b *BTreePage) PostingCount() int {
 	return int(binary.LittleEndian.Uint16(b.Data[1:3]))
 }
 
-func (b *BTreePage) SetPostingCount(n uint16) {
+func (b *BTreePage) SetPostingCount(n uint16) error {
+	if b == nil {
+		return fmt.Errorf("set posting count: nil page")
+	}
+	if b.NodeType() != PostingNode {
+		return fmt.Errorf("set posting count on page %d: expected posting node, got %d", b.ID, b.NodeType())
+	}
+	if int(n) > MaxRIDsPerPosting {
+		return fmt.Errorf("set posting count on page %d: count %d exceeds maximum %d", b.ID, n, MaxRIDsPerPosting)
+	}
 	binary.LittleEndian.PutUint16(b.Data[1:3], n)
+	return nil
 }
 
 func (b *BTreePage) NextPostingPage() uint32 {
@@ -455,20 +478,41 @@ func (b *BTreePage) GetChild(i uint32) (uint32, error) {
 	return binary.LittleEndian.Uint32(b.Data[offset+InternalKeySize:]), nil
 }
 
-func (b *BTreePage) moveHalfKeysToLeaf(newPage *BTreePage) {
-
+func (b *BTreePage) moveHalfKeysToLeaf(newPage *BTreePage) error {
+	if b == nil || newPage == nil {
+		return fmt.Errorf("split leaf page: source and destination must be non-nil")
+	}
+	if b.NodeType() != LeafNode || newPage.NodeType() != LeafNode {
+		return fmt.Errorf("split leaf page: expected leaf pages, got %d and %d", b.NodeType(), newPage.NodeType())
+	}
 	numKeys := b.GetNumKeys()
+	if numKeys < 2 || numKeys > MaxKeysPerLeaf || newPage.GetNumKeys() != 0 {
+		return fmt.Errorf("split leaf page %d: invalid source/destination counts %d and %d", b.ID, numKeys, newPage.GetNumKeys())
+	}
 	half := numKeys / 2
 
 	copy(newPage.Data[LeafHeaderSize:], b.Data[LeafHeaderSize+half*LeafEntrySize:LeafHeaderSize+numKeys*LeafEntrySize])
 
-	b.SetNumKeys(uint16(half))
-	newPage.SetNumKeys(uint16(numKeys - half))
+	if err := b.SetNumKeys(uint16(half)); err != nil {
+		return err
+	}
+	if err := newPage.SetNumKeys(uint16(numKeys - half)); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (b *BTreePage) moveHalfKeysToInternal(newPage *BTreePage) (uint64, error) {
-
+	if b == nil || newPage == nil {
+		return 0, fmt.Errorf("split internal page: source and destination must be non-nil")
+	}
+	if b.NodeType() != InternalNode || newPage.NodeType() != InternalNode {
+		return 0, fmt.Errorf("split internal page: expected internal pages, got %d and %d", b.NodeType(), newPage.NodeType())
+	}
 	numKeys := b.GetNumKeys()
+	if numKeys < 2 || numKeys > MaxKeysPerInternal || newPage.GetNumKeys() != 0 {
+		return 0, fmt.Errorf("split internal page %d: invalid source/destination counts %d and %d", b.ID, numKeys, newPage.GetNumKeys())
+	}
 	half := numKeys / 2
 
 	ascendKey, err := b.GetKey(half)
@@ -486,8 +530,12 @@ func (b *BTreePage) moveHalfKeysToInternal(newPage *BTreePage) (uint64, error) {
 		return 0, err
 	}
 
-	b.SetNumKeys(uint16(half))
-	newPage.SetNumKeys(uint16(numKeys - half - 1))
+	if err := b.SetNumKeys(uint16(half)); err != nil {
+		return 0, err
+	}
+	if err := newPage.SetNumKeys(uint16(numKeys - half - 1)); err != nil {
+		return 0, err
+	}
 
 	return ascendKey, nil
 

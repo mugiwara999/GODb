@@ -88,7 +88,9 @@ func TestSecondaryIndexErrorRollsBackTableMutation(t *testing.T) {
 		t.Fatal(err)
 	}
 	originalPosting := posting.Data
-	posting.SetPostingCount(0)
+	if err := posting.SetPostingCount(0); err != nil {
+		t.Fatal(err)
+	}
 	if err := secondary.WritePage(posting); err != nil {
 		t.Fatal(err)
 	}

@@ -15,6 +15,10 @@ import (
 	"github.com/mugiwara999/goDB/internal/wal"
 )
 
+func setRawPageCountForTest(page *BTreePage, count uint16) {
+	binary.LittleEndian.PutUint16(page.Data[1:3], count)
+}
+
 func TestBTreeLeafSettersValidateBoundsAndPageType(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -50,7 +54,7 @@ func TestBTreeLeafSettersValidateBoundsAndPageType(t *testing.T) {
 		{name: "corrupt key count", page: func() *BTreePage {
 			page := &BTreePage{ID: 6}
 			InitLeafPage(page)
-			page.SetNumKeys(uint16(MaxKeysPerLeaf + 1))
+			setRawPageCountForTest(page, uint16(MaxKeysPerLeaf+1))
 			return page
 		}(), index: 0},
 	}
@@ -94,7 +98,7 @@ func TestBTreeLeafSettersWriteLastPhysicalEntry(t *testing.T) {
 	if err := page.SetRID(index, wantRID); err != nil {
 		t.Fatalf("SetRID at last physical entry: %v", err)
 	}
-	page.SetNumKeys(uint16(MaxKeysPerLeaf))
+	setRawPageCountForTest(page, uint16(MaxKeysPerLeaf))
 	got, err := page.GetKey(index)
 	if err != nil {
 		t.Fatal(err)
@@ -121,12 +125,17 @@ func TestBTreeGetRIDValidatesPageAndIndex(t *testing.T) {
 		page  *BTreePage
 		index int
 	}{
-		{name: "internal node", page: func() *BTreePage { p := &BTreePage{ID: 1}; InitInternalPage(p); p.SetNumKeys(1); return p }(), index: 0},
+		{name: "internal node", page: func() *BTreePage { p := &BTreePage{ID: 1}; InitInternalPage(p); setRawPageCountForTest(p, 1); return p }(), index: 0},
 		{name: "invalid node type", page: &BTreePage{ID: 2, Data: [PAGE_SIZE]byte{0xff}}, index: 0},
-		{name: "negative index", page: func() *BTreePage { p := &BTreePage{ID: 3}; InitLeafPage(p); p.SetNumKeys(1); return p }(), index: -1},
-		{name: "past count", page: func() *BTreePage { p := &BTreePage{ID: 4}; InitLeafPage(p); p.SetNumKeys(1); return p }(), index: 1},
-		{name: "maximum int", page: func() *BTreePage { p := &BTreePage{ID: 5}; InitLeafPage(p); p.SetNumKeys(1); return p }(), index: int(^uint(0) >> 1)},
-		{name: "corrupt count", page: func() *BTreePage { p := &BTreePage{ID: 6}; InitLeafPage(p); p.SetNumKeys(MaxKeysPerLeaf + 1); return p }(), index: 0},
+		{name: "negative index", page: func() *BTreePage { p := &BTreePage{ID: 3}; InitLeafPage(p); setRawPageCountForTest(p, 1); return p }(), index: -1},
+		{name: "past count", page: func() *BTreePage { p := &BTreePage{ID: 4}; InitLeafPage(p); setRawPageCountForTest(p, 1); return p }(), index: 1},
+		{name: "maximum int", page: func() *BTreePage { p := &BTreePage{ID: 5}; InitLeafPage(p); setRawPageCountForTest(p, 1); return p }(), index: int(^uint(0) >> 1)},
+		{name: "corrupt count", page: func() *BTreePage {
+			p := &BTreePage{ID: 6}
+			InitLeafPage(p)
+			setRawPageCountForTest(p, MaxKeysPerLeaf+1)
+			return p
+		}(), index: 0},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -153,15 +162,25 @@ func TestBTreeGetKeyValidatesPageAndIndex(t *testing.T) {
 		index int
 	}{
 		{name: "invalid node type", page: &BTreePage{ID: 1, Data: [PAGE_SIZE]byte{0xff}}, index: 0},
-		{name: "posting node", page: func() *BTreePage { p := &BTreePage{ID: 2}; p.Data[0] = byte(PostingNode); p.SetNumKeys(1); return p }(), index: 0},
-		{name: "negative index", page: func() *BTreePage { p := &BTreePage{ID: 3}; InitLeafPage(p); p.SetNumKeys(1); return p }(), index: -1},
-		{name: "past count", page: func() *BTreePage { p := &BTreePage{ID: 4}; InitLeafPage(p); p.SetNumKeys(1); return p }(), index: 1},
-		{name: "maximum int", page: func() *BTreePage { p := &BTreePage{ID: 5}; InitLeafPage(p); p.SetNumKeys(1); return p }(), index: int(^uint(0) >> 1)},
-		{name: "corrupt leaf count", page: func() *BTreePage { p := &BTreePage{ID: 6}; InitLeafPage(p); p.SetNumKeys(MaxKeysPerLeaf + 1); return p }(), index: 0},
+		{name: "posting node", page: func() *BTreePage {
+			p := &BTreePage{ID: 2}
+			p.Data[0] = byte(PostingNode)
+			setRawPageCountForTest(p, 1)
+			return p
+		}(), index: 0},
+		{name: "negative index", page: func() *BTreePage { p := &BTreePage{ID: 3}; InitLeafPage(p); setRawPageCountForTest(p, 1); return p }(), index: -1},
+		{name: "past count", page: func() *BTreePage { p := &BTreePage{ID: 4}; InitLeafPage(p); setRawPageCountForTest(p, 1); return p }(), index: 1},
+		{name: "maximum int", page: func() *BTreePage { p := &BTreePage{ID: 5}; InitLeafPage(p); setRawPageCountForTest(p, 1); return p }(), index: int(^uint(0) >> 1)},
+		{name: "corrupt leaf count", page: func() *BTreePage {
+			p := &BTreePage{ID: 6}
+			InitLeafPage(p)
+			setRawPageCountForTest(p, MaxKeysPerLeaf+1)
+			return p
+		}(), index: 0},
 		{name: "corrupt internal count", page: func() *BTreePage {
 			p := &BTreePage{ID: 7}
 			InitInternalPage(p)
-			p.SetNumKeys(MaxKeysPerInternal + 1)
+			setRawPageCountForTest(p, MaxKeysPerInternal+1)
 			return p
 		}(), index: 0},
 	}
@@ -182,14 +201,14 @@ func TestBTreeGetKeyValidatesPageAndIndex(t *testing.T) {
 	if err := leaf.SetKey(0, 101); err != nil {
 		t.Fatal(err)
 	}
-	leaf.SetNumKeys(1)
+	setRawPageCountForTest(leaf, 1)
 	if got, err := leaf.GetKey(0); err != nil || got != 101 {
 		t.Fatalf("leaf GetKey = %d, %v; want 101", got, err)
 	}
 
 	internal := &BTreePage{ID: 9}
 	InitInternalPage(internal)
-	internal.SetNumKeys(1)
+	setRawPageCountForTest(internal, 1)
 	binary.LittleEndian.PutUint64(internal.Data[InternalHeaderSize:InternalHeaderSize+InternalKeySize], 202)
 	if got, err := internal.GetKey(0); err != nil || got != 202 {
 		t.Fatalf("internal GetKey = %d, %v; want 202", got, err)
@@ -270,12 +289,12 @@ func TestBTreeGetChildValidatesPageAndIndex(t *testing.T) {
 	}{
 		{name: "leaf node", page: func() *BTreePage { p := &BTreePage{ID: 1}; InitLeafPage(p); return p }(), index: 0},
 		{name: "invalid node type", page: &BTreePage{ID: 2, Data: [PAGE_SIZE]byte{0xff}}, index: 0},
-		{name: "past child count", page: func() *BTreePage { p := &BTreePage{ID: 3}; InitInternalPage(p); p.SetNumKeys(1); return p }(), index: 2},
+		{name: "past child count", page: func() *BTreePage { p := &BTreePage{ID: 3}; InitInternalPage(p); setRawPageCountForTest(p, 1); return p }(), index: 2},
 		{name: "maximum uint32", page: func() *BTreePage { p := &BTreePage{ID: 4}; InitInternalPage(p); return p }(), index: ^uint32(0)},
 		{name: "corrupt count", page: func() *BTreePage {
 			p := &BTreePage{ID: 5}
 			InitInternalPage(p)
-			p.SetNumKeys(MaxKeysPerInternal + 1)
+			setRawPageCountForTest(p, MaxKeysPerInternal+1)
 			return p
 		}(), index: 0},
 	}
@@ -293,7 +312,7 @@ func TestBTreeGetChildValidatesPageAndIndex(t *testing.T) {
 
 	internal := &BTreePage{ID: 6}
 	InitInternalPage(internal)
-	internal.SetNumKeys(1)
+	setRawPageCountForTest(internal, 1)
 	if err := internal.SetLeftmostChild(31); err != nil {
 		t.Fatal(err)
 	}
@@ -311,14 +330,19 @@ func TestIncrementNumKeysChecksNodeCapacity(t *testing.T) {
 		name string
 		page *BTreePage
 	}{
-		{name: "full leaf", page: func() *BTreePage { p := &BTreePage{}; InitLeafPage(p); p.SetNumKeys(uint16(MaxKeysPerLeaf)); return p }()},
+		{name: "full leaf", page: func() *BTreePage {
+			p := &BTreePage{}
+			InitLeafPage(p)
+			setRawPageCountForTest(p, uint16(MaxKeysPerLeaf))
+			return p
+		}()},
 		{name: "full internal", page: func() *BTreePage {
 			p := &BTreePage{}
 			InitInternalPage(p)
-			p.SetNumKeys(uint16(MaxKeysPerInternal))
+			setRawPageCountForTest(p, uint16(MaxKeysPerInternal))
 			return p
 		}()},
-		{name: "corrupt leaf count", page: func() *BTreePage { p := &BTreePage{}; InitLeafPage(p); p.SetNumKeys(^uint16(0)); return p }()},
+		{name: "corrupt leaf count", page: func() *BTreePage { p := &BTreePage{}; InitLeafPage(p); setRawPageCountForTest(p, ^uint16(0)); return p }()},
 		{name: "posting node", page: func() *BTreePage { p := &BTreePage{}; p.Data[0] = byte(PostingNode); return p }()},
 		{name: "invalid node type", page: &BTreePage{Data: [PAGE_SIZE]byte{0xff}}},
 	}
@@ -346,7 +370,7 @@ func TestIncrementNumKeysChecksNodeCapacity(t *testing.T) {
 		t.Run(test.name+" reaches capacity", func(t *testing.T) {
 			page := &BTreePage{}
 			test.init(page)
-			page.SetNumKeys(uint16(test.max - 1))
+			setRawPageCountForTest(page, uint16(test.max-1))
 			if err := page.IncrementNumKeys(); err != nil {
 				t.Fatalf("increment to capacity: %v", err)
 			}
@@ -354,6 +378,87 @@ func TestIncrementNumKeysChecksNodeCapacity(t *testing.T) {
 				t.Fatalf("key count = %d, want %d", got, test.max)
 			}
 		})
+	}
+}
+
+func TestSetNumKeysValidatesNodeCapacity(t *testing.T) {
+	var nilPage *BTreePage
+	if err := nilPage.SetNumKeys(0); err == nil {
+		t.Fatal("SetNumKeys accepted nil page")
+	}
+	tests := []struct {
+		name  string
+		page  *BTreePage
+		count uint16
+	}{
+		{name: "posting node", page: func() *BTreePage { p := &BTreePage{}; p.Data[0] = byte(PostingNode); return p }(), count: 1},
+		{name: "invalid node type", page: &BTreePage{Data: [PAGE_SIZE]byte{0xff}}, count: 1},
+		{name: "leaf overflow", page: func() *BTreePage { p := &BTreePage{}; InitLeafPage(p); return p }(), count: uint16(MaxKeysPerLeaf + 1)},
+		{name: "internal overflow", page: func() *BTreePage { p := &BTreePage{}; InitInternalPage(p); return p }(), count: uint16(MaxKeysPerInternal + 1)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			before := test.page.Data
+			if err := test.page.SetNumKeys(test.count); err == nil {
+				t.Fatal("SetNumKeys accepted invalid node or count")
+			}
+			if test.page.Data != before {
+				t.Fatal("failed SetNumKeys mutated page")
+			}
+		})
+	}
+	for _, test := range []struct {
+		name  string
+		init  func(*BTreePage)
+		count uint16
+	}{{"leaf", InitLeafPage, uint16(MaxKeysPerLeaf)}, {"internal", InitInternalPage, uint16(MaxKeysPerInternal)}} {
+		t.Run(test.name+" capacity", func(t *testing.T) {
+			page := &BTreePage{}
+			test.init(page)
+			if err := page.SetNumKeys(test.count); err != nil {
+				t.Fatal(err)
+			}
+			if got := page.GetNumKeys(); got != int(test.count) {
+				t.Fatalf("key count = %d, want %d", got, test.count)
+			}
+		})
+	}
+}
+
+func TestSetPostingCountValidatesNodeCapacity(t *testing.T) {
+	var nilPage *BTreePage
+	if err := nilPage.SetPostingCount(0); err == nil {
+		t.Fatal("SetPostingCount accepted nil page")
+	}
+	tests := []struct {
+		name  string
+		page  *BTreePage
+		count uint16
+	}{
+		{name: "leaf node", page: func() *BTreePage { p := &BTreePage{}; InitLeafPage(p); return p }(), count: 1},
+		{name: "invalid node type", page: &BTreePage{Data: [PAGE_SIZE]byte{0xff}}, count: 1},
+		{name: "count overflow", page: func() *BTreePage { p := &BTreePage{}; p.Data[0] = byte(PostingNode); return p }(), count: uint16(MaxRIDsPerPosting + 1)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			before := test.page.Data
+			if err := test.page.SetPostingCount(test.count); err == nil {
+				t.Fatal("SetPostingCount accepted invalid node or count")
+			}
+			if test.page.Data != before {
+				t.Fatal("failed SetPostingCount mutated page")
+			}
+		})
+	}
+	page := &BTreePage{}
+	page.Data[0] = byte(PostingNode)
+	for _, count := range []uint16{0, uint16(MaxRIDsPerPosting)} {
+		if err := page.SetPostingCount(count); err != nil {
+			t.Fatalf("SetPostingCount(%d): %v", count, err)
+		}
+		if got := page.PostingCount(); got != int(count) {
+			t.Fatalf("posting count = %d, want %d", got, count)
+		}
 	}
 }
 
@@ -373,13 +478,28 @@ func TestPostingRIDAccessorsValidatePageAndIndex(t *testing.T) {
 		{name: "leaf page", page: func() *BTreePage { p := &BTreePage{}; InitLeafPage(p); return p }(), index: 0},
 		{name: "invalid page type", page: &BTreePage{Data: [PAGE_SIZE]byte{0xff}}, index: 0},
 		{name: "empty posting page", page: func() *BTreePage { p := &BTreePage{}; p.Data[0] = byte(PostingNode); return p }(), index: 0},
-		{name: "negative index", page: func() *BTreePage { p := &BTreePage{}; p.Data[0] = byte(PostingNode); p.SetPostingCount(1); return p }(), index: -1},
-		{name: "past count", page: func() *BTreePage { p := &BTreePage{}; p.Data[0] = byte(PostingNode); p.SetPostingCount(1); return p }(), index: 1},
-		{name: "maximum int", page: func() *BTreePage { p := &BTreePage{}; p.Data[0] = byte(PostingNode); p.SetPostingCount(1); return p }(), index: int(^uint(0) >> 1)},
+		{name: "negative index", page: func() *BTreePage {
+			p := &BTreePage{}
+			p.Data[0] = byte(PostingNode)
+			setRawPageCountForTest(p, 1)
+			return p
+		}(), index: -1},
+		{name: "past count", page: func() *BTreePage {
+			p := &BTreePage{}
+			p.Data[0] = byte(PostingNode)
+			setRawPageCountForTest(p, 1)
+			return p
+		}(), index: 1},
+		{name: "maximum int", page: func() *BTreePage {
+			p := &BTreePage{}
+			p.Data[0] = byte(PostingNode)
+			setRawPageCountForTest(p, 1)
+			return p
+		}(), index: int(^uint(0) >> 1)},
 		{name: "corrupt count", page: func() *BTreePage {
 			p := &BTreePage{}
 			p.Data[0] = byte(PostingNode)
-			p.SetPostingCount(^uint16(0))
+			setRawPageCountForTest(p, ^uint16(0))
 			return p
 		}(), index: 0},
 	}
@@ -401,17 +521,22 @@ func TestPostingRIDAccessorsValidatePageAndIndex(t *testing.T) {
 	}{
 		{name: "wrong type", page: func() *BTreePage { p := &BTreePage{}; InitLeafPage(p); return p }(), index: 0},
 		{name: "negative index", page: func() *BTreePage { p := &BTreePage{}; p.Data[0] = byte(PostingNode); return p }(), index: -1},
-		{name: "skipped slot", page: func() *BTreePage { p := &BTreePage{}; p.Data[0] = byte(PostingNode); p.SetPostingCount(1); return p }(), index: 2},
+		{name: "skipped slot", page: func() *BTreePage {
+			p := &BTreePage{}
+			p.Data[0] = byte(PostingNode)
+			setRawPageCountForTest(p, 1)
+			return p
+		}(), index: 2},
 		{name: "past physical capacity", page: func() *BTreePage {
 			p := &BTreePage{}
 			p.Data[0] = byte(PostingNode)
-			p.SetPostingCount(uint16(MaxRIDsPerPosting))
+			setRawPageCountForTest(p, uint16(MaxRIDsPerPosting))
 			return p
 		}(), index: MaxRIDsPerPosting},
 		{name: "corrupt count", page: func() *BTreePage {
 			p := &BTreePage{}
 			p.Data[0] = byte(PostingNode)
-			p.SetPostingCount(^uint16(0))
+			setRawPageCountForTest(p, ^uint16(0))
 			return p
 		}(), index: 0},
 	} {
@@ -432,12 +557,12 @@ func TestPostingRIDAccessorsValidatePageAndIndex(t *testing.T) {
 	if err := page.SetPostingRID(0, want); err != nil {
 		t.Fatal(err)
 	}
-	page.SetPostingCount(1)
+	setRawPageCountForTest(page, 1)
 	if got, err := page.GetPostingRID(0); err != nil || got != want {
 		t.Fatalf("GetPostingRID(0) = %+v, %v; want %+v", got, err, want)
 	}
 
-	page.SetPostingCount(uint16(MaxRIDsPerPosting))
+	setRawPageCountForTest(page, uint16(MaxRIDsPerPosting))
 	last := MaxRIDsPerPosting - 1
 	if err := page.SetPostingRID(last, want); err != nil {
 		t.Fatal(err)
@@ -458,7 +583,7 @@ func TestInsertPageEntriesValidateLayoutAndBounds(t *testing.T) {
 
 	leaf := &BTreePage{ID: 1}
 	InitLeafPage(leaf)
-	leaf.SetNumKeys(1)
+	setRawPageCountForTest(leaf, 1)
 	badLeaf := []struct {
 		name     string
 		page     *BTreePage
@@ -468,8 +593,13 @@ func TestInsertPageEntriesValidateLayoutAndBounds(t *testing.T) {
 		{name: "negative position", page: leaf, pos: -1, num: 1},
 		{name: "past position", page: leaf, pos: 2, num: 1},
 		{name: "mismatched count", page: leaf, pos: 0, num: 0},
-		{name: "full count", page: func() *BTreePage { p := &BTreePage{}; InitLeafPage(p); p.SetNumKeys(MaxKeysPerLeaf); return p }(), pos: MaxKeysPerLeaf, num: MaxKeysPerLeaf},
-		{name: "corrupt count", page: func() *BTreePage { p := &BTreePage{}; InitLeafPage(p); p.SetNumKeys(^uint16(0)); return p }(), pos: 0, num: int(^uint16(0))},
+		{name: "full count", page: func() *BTreePage {
+			p := &BTreePage{}
+			InitLeafPage(p)
+			setRawPageCountForTest(p, MaxKeysPerLeaf)
+			return p
+		}(), pos: MaxKeysPerLeaf, num: MaxKeysPerLeaf},
+		{name: "corrupt count", page: func() *BTreePage { p := &BTreePage{}; InitLeafPage(p); setRawPageCountForTest(p, ^uint16(0)); return p }(), pos: 0, num: int(^uint16(0))},
 	}
 	for _, test := range badLeaf {
 		t.Run("leaf "+test.name, func(t *testing.T) {
@@ -485,7 +615,7 @@ func TestInsertPageEntriesValidateLayoutAndBounds(t *testing.T) {
 
 	internal := &BTreePage{ID: 3}
 	InitInternalPage(internal)
-	internal.SetNumKeys(1)
+	setRawPageCountForTest(internal, 1)
 	badInternal := []struct {
 		name     string
 		page     *BTreePage
@@ -495,8 +625,18 @@ func TestInsertPageEntriesValidateLayoutAndBounds(t *testing.T) {
 		{name: "negative position", page: internal, pos: -1, num: 1},
 		{name: "past position", page: internal, pos: 2, num: 1},
 		{name: "mismatched count", page: internal, pos: 0, num: 0},
-		{name: "full count", page: func() *BTreePage { p := &BTreePage{}; InitInternalPage(p); p.SetNumKeys(MaxKeysPerInternal); return p }(), pos: MaxKeysPerInternal, num: MaxKeysPerInternal},
-		{name: "corrupt count", page: func() *BTreePage { p := &BTreePage{}; InitInternalPage(p); p.SetNumKeys(^uint16(0)); return p }(), pos: 0, num: int(^uint16(0))},
+		{name: "full count", page: func() *BTreePage {
+			p := &BTreePage{}
+			InitInternalPage(p)
+			setRawPageCountForTest(p, MaxKeysPerInternal)
+			return p
+		}(), pos: MaxKeysPerInternal, num: MaxKeysPerInternal},
+		{name: "corrupt count", page: func() *BTreePage {
+			p := &BTreePage{}
+			InitInternalPage(p)
+			setRawPageCountForTest(p, ^uint16(0))
+			return p
+		}(), pos: 0, num: int(^uint16(0))},
 	}
 	for _, test := range badInternal {
 		t.Run("internal "+test.name, func(t *testing.T) {

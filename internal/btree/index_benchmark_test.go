@@ -124,7 +124,9 @@ func benchmarkDuplicateIndex(b *testing.B, totalRIDs int) *Index {
 		if count > MaxRIDsPerPosting {
 			count = MaxRIDsPerPosting
 		}
-		page.SetPostingCount(uint16(count))
+		if err := page.SetPostingCount(uint16(count)); err != nil {
+			b.Fatal(err)
+		}
 		for i := 0; i < count; i++ {
 			n := offset + i
 			if err := page.SetPostingRID(i, RID{pageID: uint32(n/256 + 10), slotID: uint16(n % 256)}); err != nil {

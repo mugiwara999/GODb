@@ -283,7 +283,9 @@ func (ind *Index) NewPostingPage() (*BTreePage, error) {
 		return nil, err
 	}
 	page.Data[0] = byte(PostingNode)
-	page.SetPostingCount(0)
+	if err := page.SetPostingCount(0); err != nil {
+		return nil, err
+	}
 	page.SetNextPostingPage(0)
 	return page, nil
 }
@@ -416,6 +418,9 @@ func (ind *Index) InsertIntoLeafPage(p *BTreePage, key uint64, id RID) (uint64, 
 }
 
 func (ind *Index) SplitLeafPage(p *BTreePage) (newPage *BTreePage, ascendKey uint64, err error) {
+	if p == nil || p.NodeType() != LeafNode || p.GetNumKeys() < 2 || p.GetNumKeys() > MaxKeysPerLeaf {
+		return nil, 0, fmt.Errorf("split leaf page: invalid source page or key count")
+	}
 	newPage, err = ind.NewLeafPage()
 
 	if err != nil {
@@ -424,7 +429,9 @@ func (ind *Index) SplitLeafPage(p *BTreePage) (newPage *BTreePage, ascendKey uin
 
 	newPage.SetParentID(p.GetParentID())
 
-	p.moveHalfKeysToLeaf(newPage)
+	if err := p.moveHalfKeysToLeaf(newPage); err != nil {
+		return nil, 0, err
+	}
 
 	if err := newPage.SetNextLeaf(p.NextLeaf()); err != nil {
 		return nil, 0, err
@@ -659,6 +666,9 @@ func (ind *Index) InsertIntoInternalPage(parent *BTreePage, key uint64, childPag
 }
 
 func (ind *Index) SplitInternalPage(p *BTreePage) (ascendKey uint64, newPage *BTreePage, err error) {
+	if p == nil || p.NodeType() != InternalNode || p.GetNumKeys() < 2 || p.GetNumKeys() > MaxKeysPerInternal {
+		return 0, nil, fmt.Errorf("split internal page: invalid source page or key count")
+	}
 	newPage, err = ind.NewInternalPage()
 
 	if err != nil {
@@ -914,7 +924,9 @@ func (ind *Index) InsertDuplicate(key uint64, pageID uint32, slotID uint16) erro
 			if err != nil {
 				return err
 			}
-			posting.SetPostingCount(2)
+			if err := posting.SetPostingCount(2); err != nil {
+				return err
+			}
 			if err := posting.SetPostingRID(0, *stored); err != nil {
 				return err
 			}
@@ -944,14 +956,18 @@ func (ind *Index) InsertDuplicate(key uint64, pageID uint32, slotID uint16) erro
 			if err := tail.SetPostingRID(tail.PostingCount(), rid); err != nil {
 				return err
 			}
-			tail.SetPostingCount(uint16(tail.PostingCount() + 1))
+			if err := tail.SetPostingCount(uint16(tail.PostingCount() + 1)); err != nil {
+				return err
+			}
 			return ind.WritePage(tail)
 		}
 		newPage, err := ind.NewPostingPage()
 		if err != nil {
 			return err
 		}
-		newPage.SetPostingCount(1)
+		if err := newPage.SetPostingCount(1); err != nil {
+			return err
+		}
 		if err := newPage.SetPostingRID(0, rid); err != nil {
 			return err
 		}
@@ -1111,7 +1127,9 @@ func (ind *Index) DeleteRID(key uint64, pageID uint32, slotID uint16) error {
 					end = len(rids)
 				}
 				clear(posting.Data[PostingHeaderSize:])
-				posting.SetPostingCount(uint16(end - start))
+				if err := posting.SetPostingCount(uint16(end - start)); err != nil {
+					return err
+				}
 				if pageIndex+1 < requiredPages {
 					posting.SetNextPostingPage(postingPages[pageIndex+1].ID)
 				} else {
@@ -1262,7 +1280,9 @@ func (ind *Index) Delete(key uint64) error {
 			}
 		}
 
-		removeLeafEntry(leaf, i)
+		if err := removeLeafEntry(leaf, i); err != nil {
+			return err
+		}
 		var writeErr error
 		if leaf.ID == ind.rootPageID || leaf.GetNumKeys() >= MinKeysPerLeaf {
 			writeErr = ind.WritePage(leaf)
@@ -1283,13 +1303,25 @@ func (ind *Index) Delete(key uint64) error {
 	return fmt.Errorf("key %d: %w", key, ErrKeyNotFound)
 }
 
-func removeLeafEntry(leaf *BTreePage, pos int) {
+func removeLeafEntry(leaf *BTreePage, pos int) error {
+	if leaf == nil {
+		return fmt.Errorf("remove leaf entry: nil page")
+	}
+	if leaf.NodeType() != LeafNode {
+		return fmt.Errorf("remove leaf entry from page %d: expected leaf node, got %d", leaf.ID, leaf.NodeType())
+	}
 	numKeys := leaf.GetNumKeys()
+	if numKeys < 1 || numKeys > MaxKeysPerLeaf || pos < 0 || pos >= numKeys {
+		return fmt.Errorf("remove leaf entry %d from page %d with invalid key count %d", pos, leaf.ID, numKeys)
+	}
 	start := LeafHeaderSize + pos*LeafEntrySize
 	end := LeafHeaderSize + numKeys*LeafEntrySize
 	copy(leaf.Data[start:end-LeafEntrySize], leaf.Data[start+LeafEntrySize:end])
 	clear(leaf.Data[end-LeafEntrySize : end])
-	leaf.SetNumKeys(uint16(numKeys - 1))
+	if err := leaf.SetNumKeys(uint16(numKeys - 1)); err != nil {
+		return err
+	}
+	return nil
 }
 
 func readInternal(p *BTreePage) ([]uint32, []uint64, error) {
@@ -1326,7 +1358,9 @@ func writeInternal(p *BTreePage, children []uint32, keys []uint64) error {
 		binary.LittleEndian.PutUint64(p.Data[offset:offset+8], key)
 		binary.LittleEndian.PutUint32(p.Data[offset+8:offset+12], children[i+1])
 	}
-	p.SetNumKeys(uint16(len(keys)))
+	if err := p.SetNumKeys(uint16(len(keys))); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1409,11 +1443,15 @@ func (ind *Index) rebalanceLeaf(leaf *BTreePage) error {
 			if err != nil {
 				return err
 			}
-			removeLeafEntry(left, last)
+			if err := removeLeafEntry(left, last); err != nil {
+				return err
+			}
 			if err := leaf.InsertIntoLeafAt(0, key, *rid, leafCount); err != nil {
 				return err
 			}
-			leaf.SetNumKeys(uint16(leafCount + 1))
+			if err := leaf.SetNumKeys(uint16(leafCount + 1)); err != nil {
+				return err
+			}
 			setInternalKey(parent, pos-1, key)
 			for _, page := range []*BTreePage{left, leaf, parent} {
 				if err := ind.WritePage(page); err != nil {
@@ -1440,8 +1478,12 @@ func (ind *Index) rebalanceLeaf(leaf *BTreePage) error {
 			if err := leaf.InsertIntoLeafAt(leafCount, key, *rid, leafCount); err != nil {
 				return err
 			}
-			leaf.SetNumKeys(uint16(leafCount + 1))
-			removeLeafEntry(right, 0)
+			if err := leaf.SetNumKeys(uint16(leafCount + 1)); err != nil {
+				return err
+			}
+			if err := removeLeafEntry(right, 0); err != nil {
+				return err
+			}
 			newFirstKey, err := right.GetKey(0)
 			if err != nil {
 				return err
@@ -1463,7 +1505,9 @@ func (ind *Index) rebalanceLeaf(leaf *BTreePage) error {
 		}
 		leftCount := left.GetNumKeys()
 		copy(left.Data[LeafHeaderSize+leftCount*LeafEntrySize:], leaf.Data[LeafHeaderSize:LeafHeaderSize+leafCount*LeafEntrySize])
-		left.SetNumKeys(uint16(leftCount + leafCount))
+		if err := left.SetNumKeys(uint16(leftCount + leafCount)); err != nil {
+			return err
+		}
 		if err := left.SetNextLeaf(leaf.NextLeaf()); err != nil {
 			return err
 		}
@@ -1489,7 +1533,9 @@ func (ind *Index) rebalanceLeaf(leaf *BTreePage) error {
 	}
 	rightCount := right.GetNumKeys()
 	copy(leaf.Data[LeafHeaderSize+leafCount*LeafEntrySize:], right.Data[LeafHeaderSize:LeafHeaderSize+rightCount*LeafEntrySize])
-	leaf.SetNumKeys(uint16(leafCount + rightCount))
+	if err := leaf.SetNumKeys(uint16(leafCount + rightCount)); err != nil {
+		return err
+	}
 	if err := leaf.SetNextLeaf(right.NextLeaf()); err != nil {
 		return err
 	}
