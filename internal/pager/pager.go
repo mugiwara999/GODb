@@ -28,6 +28,7 @@ const (
 	GODB              = 0x474f4442
 	MetadataVersionV1 = uint16(1)
 	MetadataVersionV2 = uint16(2)
+	MetadataVersionV3 = uint16(3)
 	LastIDOffset      = 6
 	LastIDSize        = 8
 	NumColsOffset     = 14
@@ -206,7 +207,7 @@ func (p *Pager) GetSchema() ([]string, []ColumnType, error) {
 		}
 		return cols, types, nil
 	}
-	if version != MetadataVersionV2 {
+	if version != MetadataVersionV2 && version != MetadataVersionV3 {
 		return nil, nil, fmt.Errorf("read table metadata from %q: %w (unsupported version %d)", p.path, ErrMetadataCorrupt, version)
 	}
 	if offset+numCols > PAGE_SIZE {
@@ -216,6 +217,24 @@ func (p *Pager) GetSchema() ([]string, []ColumnType, error) {
 		types[i] = ColumnType(page.Data[offset+i])
 		if types[i] != ColumnTypeText && types[i] != ColumnTypeUint64 {
 			return nil, nil, fmt.Errorf("read table metadata from %q: %w (invalid type tag %d for column %q)", p.path, ErrMetadataCorrupt, types[i], cols[i])
+		}
+	}
+	if version == MetadataVersionV3 {
+		flagBytes := (numCols + 7) / 8
+		if offset+numCols+flagBytes > PAGE_SIZE {
+			return nil, nil, fmt.Errorf("read table metadata from %q: %w (index flags exceed metadata page)", p.path, ErrMetadataCorrupt)
+		}
+		flagsOffset := offset + numCols
+		for i, columnType := range types {
+			if page.Data[flagsOffset+i/8]&(1<<uint(i%8)) != 0 && (i == 0 || columnType != ColumnTypeUint64) {
+				return nil, nil, fmt.Errorf("read table metadata from %q: %w (invalid secondary-index flag for column %q)", p.path, ErrMetadataCorrupt, cols[i])
+			}
+		}
+		if remainder := numCols % 8; remainder != 0 {
+			unusedMask := byte(0xff << uint(remainder))
+			if page.Data[flagsOffset+flagBytes-1]&unusedMask != 0 {
+				return nil, nil, fmt.Errorf("read table metadata from %q: %w (unused index-catalog bits are set)", p.path, ErrMetadataCorrupt)
+			}
 		}
 	}
 	return cols, types, nil
@@ -230,6 +249,123 @@ func (p *Pager) WriteSchema(cols []string, types []ColumnType) error {
 		return fmt.Errorf("write typed schema to %q: %w (got %d names and %d types)", p.path, ErrMetadataCorrupt, len(cols), len(types))
 	}
 	return p.writeColumns(cols, types, MetadataVersionV2)
+}
+
+// GetIndexedColumns reads the v3 secondary-index catalog. A nil slice means
+// the metadata version predates the catalog and index files are legacy-defined.
+func (p *Pager) GetIndexedColumns() ([]bool, error) {
+	cols, _, err := p.GetSchema()
+	if err != nil {
+		return nil, err
+	}
+	page, err := p.GetPage(0)
+	if err != nil {
+		return nil, err
+	}
+	if binary.LittleEndian.Uint16(page.Data[4:6]) < MetadataVersionV3 {
+		return nil, nil
+	}
+	typeOffset, err := metadataTypeOffset(page, len(cols))
+	if err != nil {
+		return nil, err
+	}
+	flagOffset := typeOffset + len(cols)
+	flagBytes := (len(cols) + 7) / 8
+	if flagOffset+flagBytes > PAGE_SIZE {
+		return nil, fmt.Errorf("read index catalog from %q: %w", p.path, ErrMetadataCorrupt)
+	}
+	indexed := make([]bool, len(cols))
+	for i := range indexed {
+		indexed[i] = page.Data[flagOffset+i/8]&(1<<uint(i%8)) != 0
+	}
+	return indexed, nil
+}
+
+// SetColumnIndexed marks a typed non-ID column as indexed. A v2 schema is
+// upgraded to v3 when the catalog is first written.
+func (p *Pager) SetColumnIndexed(columnIndex int, indexed bool) error {
+	cols, types, err := p.GetSchema()
+	if err != nil {
+		return err
+	}
+	if columnIndex <= 0 || columnIndex >= len(cols) {
+		return fmt.Errorf("write index catalog to %q: invalid column index %d", p.path, columnIndex)
+	}
+	if types[columnIndex] != ColumnTypeUint64 {
+		return fmt.Errorf("write index catalog to %q: column %q is not UINT64", p.path, cols[columnIndex])
+	}
+	flags, err := p.GetIndexedColumns()
+	if err != nil {
+		return err
+	}
+	if flags == nil {
+		flags = make([]bool, len(cols))
+	}
+	flags[columnIndex] = indexed
+	return p.SetIndexCatalog(flags)
+}
+
+// SetIndexCatalog replaces all secondary-index flags in one metadata-page
+// write, allowing table code to migrate legacy index files atomically.
+func (p *Pager) SetIndexCatalog(indexed []bool) error {
+	cols, types, err := p.GetSchema()
+	if err != nil {
+		return err
+	}
+	if len(indexed) != len(cols) {
+		return fmt.Errorf("write index catalog to %q: got %d flags for %d columns", p.path, len(indexed), len(cols))
+	}
+	if indexed[0] {
+		return fmt.Errorf("write index catalog to %q: generated id cannot be a secondary index", p.path)
+	}
+	for i := 1; i < len(indexed); i++ {
+		if indexed[i] && types[i] != ColumnTypeUint64 {
+			return fmt.Errorf("write index catalog to %q: column %q is not UINT64", p.path, cols[i])
+		}
+	}
+	page, err := p.GetPage(0)
+	if err != nil {
+		return err
+	}
+	version := binary.LittleEndian.Uint16(page.Data[4:6])
+	if version != MetadataVersionV2 && version != MetadataVersionV3 {
+		return fmt.Errorf("write index catalog to %q: %w (unsupported version %d)", p.path, ErrMetadataCorrupt, version)
+	}
+	typeOffset, err := metadataTypeOffset(page, len(cols))
+	if err != nil {
+		return err
+	}
+	flagOffset := typeOffset + len(cols)
+	flagBytes := (len(cols) + 7) / 8
+	if flagOffset+flagBytes > PAGE_SIZE {
+		return fmt.Errorf("write index catalog to %q: %w (flags exceed metadata page)", p.path, ErrPageFull)
+	}
+	if version == MetadataVersionV2 {
+		clear(page.Data[flagOffset : flagOffset+flagBytes])
+		binary.LittleEndian.PutUint16(page.Data[4:6], MetadataVersionV3)
+	} else {
+		clear(page.Data[flagOffset : flagOffset+flagBytes])
+	}
+	for i, isIndexed := range indexed {
+		if isIndexed {
+			page.Data[flagOffset+i/8] |= 1 << uint(i%8)
+		}
+	}
+	return p.Flush(page)
+}
+
+func metadataTypeOffset(page *Page, numCols int) (int, error) {
+	offset := ColNamesOffset
+	for i := 0; i < numCols; i++ {
+		for offset < PAGE_SIZE && page.Data[offset] != 0 {
+			offset++
+		}
+		if offset >= PAGE_SIZE {
+			return 0, fmt.Errorf("metadata column %d is unterminated: %w", i, ErrMetadataCorrupt)
+		}
+		offset++
+	}
+	return offset, nil
 }
 
 func (p *Pager) writeColumns(cols []string, types []ColumnType, version uint16) error {
@@ -419,7 +555,7 @@ func isValidPager(p *Pager) error {
 }
 
 func supportedMetadataVersion(version uint16) bool {
-	return version == MetadataVersionV1 || version == MetadataVersionV2
+	return version == MetadataVersionV1 || version == MetadataVersionV2 || version == MetadataVersionV3
 }
 
 type rowIterator struct {

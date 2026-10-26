@@ -292,6 +292,8 @@ CREATE TABLE typed_users (age UINT64, name TEXT)
 
 The generated `id` column is always `UINT64`. Untyped declarations such as `CREATE TABLE users (name, age)` remain supported and treat user columns as `TEXT`. `UINT64` values accept unsigned decimal input, are stored in canonical decimal form, and reject negative, nonnumeric, or overflowing values. Existing version-1 tables remain readable; their generated `id` is inferred as `UINT64` and user columns remain `TEXT`.
 
+Typed table metadata version 3 records which secondary indexes are declared. Versions 1 and 2 remain readable; version-2 tables are upgraded when a secondary index is created. A missing declared index is reported on open, while an unlisted orphan index file is ignored until the index is recreated.
+
 Mutations to an existing table use an undo journal and are recovered when the table is opened. Creation stages the table and primary index together; an interrupted publication is cleaned up on the next open or create, and creating an existing name returns an error without replacing its files. Linux, Darwin, DragonFly, FreeBSD, NetBSD, and OpenBSD use advisory locks to serialize recovery and writes across cooperating processes; other targets, including Solaris and Windows, currently serialize writers only within one process. Table creation and WAL startup sync files and their containing directories and return errors if those syncs fail. Runtime storage tests run on Linux; Windows and Solaris are cross-built, but their filesystem durability behavior is not runtime-verified. Reads do not have snapshot isolation while another handle is mutating the same table.
 
 ## Benchmarks

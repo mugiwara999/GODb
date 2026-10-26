@@ -67,10 +67,27 @@ func (t *Table) CreateIndex(column string) error {
 	if t.Indexes[canonical] != nil {
 		return fmt.Errorf("create index on table %q column %q: %w", t.Name, canonical, ErrIndexExists)
 	}
+	if t.indexedCols == nil {
+		catalog := make([]bool, len(t.cols))
+		for i := 1; i < len(t.cols); i++ {
+			catalog[i] = t.Indexes[t.cols[i]] != nil
+		}
+		if err := t.writeIndexCatalog(catalog); err != nil {
+			return fmt.Errorf("migrate legacy index files into catalog: %w", err)
+		}
+	}
 
 	finalPath := btree.IndexPath(t.Name, canonical)
 	if _, err := os.Stat(finalPath); err == nil {
-		return fmt.Errorf("create index on table %q column %q: %w", t.Name, canonical, ErrIndexExists)
+		if t.indexedCols == nil || t.indexedCols[columnIndex] {
+			return fmt.Errorf("create index on table %q column %q: %w", t.Name, canonical, ErrIndexExists)
+		}
+		if err := os.Remove(finalPath); err != nil {
+			return fmt.Errorf("remove unlisted orphan index %q: %w", finalPath, err)
+		}
+		if err := syncDirectory(filepath.Dir(finalPath)); err != nil {
+			return fmt.Errorf("sync removal of orphan index %q: %w", finalPath, err)
+		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("inspect index path %q: %w", finalPath, err)
 	}
@@ -136,13 +153,73 @@ func (t *Table) CreateIndex(column string) error {
 		_ = syncDirectory(filepath.Dir(finalPath))
 		return fmt.Errorf("open published index %q: %w", canonical, err)
 	}
+	if err := t.setColumnIndexed(columnIndex, true); err != nil {
+		_ = published.Close()
+		if !t.poisoned {
+			_ = os.Remove(finalPath)
+			_ = syncDirectory(filepath.Dir(finalPath))
+		}
+		return fmt.Errorf("record index %q in table catalog: %w", canonical, err)
+	}
 	t.Indexes[canonical] = published
 	return nil
 }
 
+func (t *Table) setColumnIndexed(columnIndex int, indexed bool) error {
+	flags := make([]bool, len(t.cols))
+	copy(flags, t.indexedCols)
+	flags[columnIndex] = indexed
+	return t.writeIndexCatalog(flags)
+}
+
+func (t *Table) writeIndexCatalog(flags []bool) error {
+	journal, err := wal.Begin(t.Path + ".wal")
+	if err != nil {
+		return err
+	}
+	t.Pager.SetJournal(journal)
+	if err := t.Pager.SetIndexCatalog(flags); err != nil {
+		rbErr := journal.Rollback()
+		t.Pager.SetJournal(nil)
+		if rbErr != nil {
+			t.poisoned = true
+			return errors.Join(err, fmt.Errorf("rollback index catalog: %w", rbErr))
+		}
+		if refreshErr := t.Pager.Refresh(); refreshErr != nil {
+			t.poisoned = true
+			return errors.Join(err, fmt.Errorf("refresh table after catalog rollback: %w", refreshErr))
+		}
+		return err
+	}
+	if err := journal.Commit(); err != nil {
+		rbErr := journal.Rollback()
+		t.Pager.SetJournal(nil)
+		if rbErr != nil {
+			t.poisoned = true
+			return errors.Join(err, fmt.Errorf("rollback index catalog commit: %w", rbErr))
+		}
+		if refreshErr := t.Pager.Refresh(); refreshErr != nil {
+			t.poisoned = true
+			return errors.Join(err, fmt.Errorf("refresh table after catalog rollback: %w", refreshErr))
+		}
+		return err
+	}
+	t.Pager.SetJournal(nil)
+	t.indexedCols = append([]bool(nil), flags...)
+	return nil
+}
+
 func (t *Table) refreshIndexes() error {
+	indexedCols, err := t.Pager.GetIndexedColumns()
+	if err != nil {
+		return fmt.Errorf("read index catalog: %w", err)
+	}
+	t.indexedCols = indexedCols
 	for columnIndex, column := range t.cols {
 		if columnIndex > 0 && t.colTypes[columnIndex] != ColumnUint64 {
+			continue
+		}
+		if columnIndex > 0 && indexedCols != nil && !indexedCols[columnIndex] {
 			continue
 		}
 		if index := t.Indexes[column]; index != nil {
@@ -153,6 +230,9 @@ func (t *Table) refreshIndexes() error {
 		}
 		path := btree.IndexPath(t.Name, column)
 		if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+			if columnIndex == 0 || indexedCols != nil && indexedCols[columnIndex] {
+				return fmt.Errorf("declared index %q is missing", column)
+			}
 			continue
 		} else if err != nil {
 			return fmt.Errorf("inspect index %q: %w", column, err)

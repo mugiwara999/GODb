@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/mugiwara999/goDB/internal/pager"
+	"github.com/mugiwara999/goDB/internal/wal"
 )
 
 type slotMeta struct {
@@ -780,6 +781,87 @@ func TestWriteSchemaRejectsInvalidTypesWithoutAllocatingPage(t *testing.T) {
 	}
 	if got := pg.GetNumPages(); got != 0 {
 		t.Fatalf("page count after rejected schema = %d, want 0", got)
+	}
+}
+
+func TestIndexCatalogUpgradesV2AndRoundTrips(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "index-catalog.bin")
+	pg, err := pager.CreatePager(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pg.Close()
+	if err := pg.WriteSchema([]string{"id", "age", "name"}, []pager.ColumnType{
+		pager.ColumnTypeUint64, pager.ColumnTypeUint64, pager.ColumnTypeText,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if flags, err := pg.GetIndexedColumns(); err != nil || flags != nil {
+		t.Fatalf("legacy catalog = %v, %v; want nil", flags, err)
+	}
+	if err := pg.SetColumnIndexed(1, true); err != nil {
+		t.Fatalf("SetColumnIndexed: %v", err)
+	}
+	flags, err := pg.GetIndexedColumns()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(flags) != 3 || flags[0] || !flags[1] || flags[2] {
+		t.Fatalf("GetIndexedColumns() = %v, want [false true false]", flags)
+	}
+	page, err := pg.GetPage(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := binary.LittleEndian.Uint16(page.Data[4:6]); got != pager.MetadataVersionV3 {
+		t.Fatalf("metadata version = %d, want v3", got)
+	}
+	if err := pg.SetColumnIndexed(1, false); err != nil {
+		t.Fatalf("clear index catalog bit: %v", err)
+	}
+	flags, err = pg.GetIndexedColumns()
+	if err != nil || flags[1] {
+		t.Fatalf("GetIndexedColumns after clear = %v, %v", flags, err)
+	}
+	if err := pg.SetColumnIndexed(0, true); err == nil {
+		t.Fatal("SetColumnIndexed accepted generated ID")
+	}
+	if err := pg.SetColumnIndexed(2, true); err == nil {
+		t.Fatal("SetColumnIndexed accepted TEXT column")
+	}
+	if err := pg.SetIndexCatalog([]bool{false, false, true}); err == nil {
+		t.Fatal("SetIndexCatalog accepted a TEXT index flag")
+	}
+}
+
+func TestIndexCatalogUpgradeRollsBackWithWAL(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "catalog-rollback.bin")
+	pg, err := pager.CreatePager(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pg.Close()
+	if err := pg.WriteSchema([]string{"id", "age"}, []pager.ColumnType{pager.ColumnTypeUint64, pager.ColumnTypeUint64}); err != nil {
+		t.Fatal(err)
+	}
+	journal, err := wal.Begin(path + ".wal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pg.SetJournal(journal)
+	if err := pg.SetColumnIndexed(1, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Rollback(); err != nil {
+		t.Fatalf("Rollback: %v", err)
+	}
+	pg.SetJournal(nil)
+	if err := pg.Refresh(); err != nil {
+		t.Fatal(err)
+	}
+	flags, err := pg.GetIndexedColumns()
+	if err != nil || flags != nil {
+		t.Fatalf("catalog after rollback = %v, %v; want legacy nil", flags, err)
 	}
 }
 

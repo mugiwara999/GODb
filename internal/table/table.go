@@ -19,15 +19,16 @@ import (
 )
 
 type Table struct {
-	Pager      *pager.Pager
-	Name       string
-	Path       string
-	cols       []string
-	colTypes   []pager.ColumnType
-	Indexes    map[string]*btree.Index
-	lastID     uint64
-	mutationMu sync.Mutex
-	poisoned   bool
+	Pager       *pager.Pager
+	Name        string
+	Path        string
+	cols        []string
+	colTypes    []pager.ColumnType
+	indexedCols []bool
+	Indexes     map[string]*btree.Index
+	lastID      uint64
+	mutationMu  sync.Mutex
+	poisoned    bool
 }
 
 type ColumnType = pager.ColumnType
@@ -93,6 +94,11 @@ func openTable(name, path string) (*Table, error) {
 		_ = pg.Close()
 		return nil, fmt.Errorf("open table %q at %q: %w (generated id column must have UINT64 type)", name, path, pager.ErrMetadataCorrupt)
 	}
+	indexedCols, err := pg.GetIndexedColumns()
+	if err != nil {
+		_ = pg.Close()
+		return nil, fmt.Errorf("open table %q index catalog: %w", name, err)
+	}
 
 	idxs := make(map[string]*btree.Index)
 
@@ -100,14 +106,17 @@ func openTable(name, path string) (*Table, error) {
 		if i > 0 && colTypes[i] != pager.ColumnTypeUint64 {
 			continue
 		}
+		if i > 0 && indexedCols != nil && !indexedCols[i] {
+			continue
+		}
 		indexPath := btree.IndexPath(name, col)
 		if _, statErr := os.Stat(indexPath); errors.Is(statErr, os.ErrNotExist) {
-			if col == "id" {
+			if col == "id" || indexedCols != nil && indexedCols[i] {
 				for _, opened := range idxs {
 					_ = opened.Close()
 				}
 				_ = pg.Close()
-				return nil, fmt.Errorf("open table %q primary index: %w", name, statErr)
+				return nil, fmt.Errorf("open table %q index %q: %w", name, col, statErr)
 			}
 			continue
 		} else if statErr != nil {
@@ -136,13 +145,14 @@ func openTable(name, path string) (*Table, error) {
 	}
 
 	return &Table{
-		Pager:    pg,
-		Name:     strings.ToLower(name),
-		Path:     path,
-		cols:     cols,
-		colTypes: colTypes,
-		Indexes:  idxs,
-		lastID:   lastID,
+		Pager:       pg,
+		Name:        strings.ToLower(name),
+		Path:        path,
+		cols:        cols,
+		colTypes:    colTypes,
+		indexedCols: indexedCols,
+		Indexes:     idxs,
+		lastID:      lastID,
 	}, nil
 }
 
@@ -224,7 +234,7 @@ func (t *Table) reopenAfterRollback() error {
 	if err != nil {
 		return err
 	}
-	t.Pager, t.cols, t.colTypes, t.Indexes, t.lastID = reopened.Pager, reopened.cols, reopened.colTypes, reopened.Indexes, reopened.lastID
+	t.Pager, t.cols, t.colTypes, t.indexedCols, t.Indexes, t.lastID = reopened.Pager, reopened.cols, reopened.colTypes, reopened.indexedCols, reopened.Indexes, reopened.lastID
 	return nil
 }
 

@@ -2,6 +2,7 @@ package table
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"os"
 	"path/filepath"
@@ -292,6 +293,118 @@ func TestOpenRejectsCorruptPresentSecondaryIndex(t *testing.T) {
 	}
 	if _, err := Open("corrupt_secondary"); err == nil {
 		t.Fatal("Open ignored a corrupt present secondary index")
+	}
+}
+
+func TestSecondaryIndexCatalogRequiresDeclaredFileAndIgnoresOrphan(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "data")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DATA_DIR", dataDir)
+	tbl, err := CreateWithTypes("index_catalog_lifecycle", []Column{{Name: "age", Type: ColumnUint64}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tbl.CreateIndex("age"); err != nil {
+		t.Fatal(err)
+	}
+	indexPath := btree.IndexPath("index_catalog_lifecycle", "age")
+	if err := os.Remove(indexPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := tbl.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open("index_catalog_lifecycle"); err == nil {
+		t.Fatal("Open accepted a missing catalog-declared index")
+	}
+
+	metadataPager, err := pager.OpenPager(tbl.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := metadataPager.SetColumnIndexed(1, false); err != nil {
+		_ = metadataPager.Close()
+		t.Fatal(err)
+	}
+	if err := metadataPager.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(indexPath, []byte("orphan"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tbl, err = Open("index_catalog_lifecycle")
+	if err != nil {
+		t.Fatalf("Open with unlisted orphan: %v", err)
+	}
+	if tbl.Indexes["age"] != nil {
+		t.Fatal("Open loaded an unlisted orphan index")
+	}
+	if err := tbl.CreateIndex("age"); err != nil {
+		t.Fatalf("CreateIndex should replace unlisted orphan: %v", err)
+	}
+	if err := tbl.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSecondaryIndexCatalogMigrationPreservesLegacyIndex(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "data")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DATA_DIR", dataDir)
+	tbl, err := CreateWithTypes("catalog_migration", []Column{
+		{Name: "age", Type: ColumnUint64},
+		{Name: "score", Type: ColumnUint64},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tbl.Insert([]string{"42", "7"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tbl.CreateIndex("age"); err != nil {
+		t.Fatal(err)
+	}
+	page, err := tbl.Pager.GetPage(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binary.LittleEndian.PutUint16(page.Data[4:6], pager.MetadataVersionV2)
+	if err := tbl.Pager.Flush(page); err != nil {
+		t.Fatal(err)
+	}
+	if err := tbl.Close(); err != nil {
+		t.Fatal(err)
+	}
+	tbl, err = Open("catalog_migration")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tbl.CreateIndex("score"); err != nil {
+		t.Fatalf("CreateIndex after legacy metadata reopen: %v", err)
+	}
+	if err := tbl.Insert([]string{"42", "7"}); err != nil {
+		t.Fatalf("Insert after catalog migration: %v", err)
+	}
+	if err := tbl.ValidateIndexes(); err != nil {
+		t.Fatalf("ValidateIndexes after migration: %v", err)
+	}
+	if err := tbl.Close(); err != nil {
+		t.Fatal(err)
+	}
+	tbl, err = Open("catalog_migration")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tbl.Close()
+	for _, column := range []int{1, 2} {
+		rows, err := tbl.Select([]string{"id"}, []ColEq{{ColIdx: column, Value: map[int]string{1: "42", 2: "7"}[column]}})
+		if err != nil || len(rows) != 3 {
+			t.Fatalf("indexed select for column %d = %q, %v; want two rows", column, rows, err)
+		}
 	}
 }
 
