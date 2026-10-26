@@ -270,6 +270,10 @@ func (t *Table) Select(columns []string, colEquals []ColEq) ([][]string, error) 
 }
 
 func (t *Table) Delete(filters []ColEq) error {
+	index := t.Indexes["id"]
+	if index == nil {
+		return fmt.Errorf("delete from table %q: missing primary key index", t.Name)
+	}
 	rowIt := t.Pager.RowIterator()
 
 	for {
@@ -298,6 +302,10 @@ func (t *Table) Delete(filters []ColEq) error {
 		}
 
 		if match {
+			id, err := strconv.ParseUint(row[0], 10, 64)
+			if err != nil {
+				return fmt.Errorf("delete from table %q: invalid row ID %q: %w", t.Name, row[0], err)
+			}
 			matchInfo := rowIt.GetCurrentInfo()
 			page, err := t.Pager.GetPage(matchInfo.PageID)
 			if err != nil {
@@ -310,6 +318,9 @@ func (t *Table) Delete(filters []ColEq) error {
 
 			if err := t.Pager.Flush(page); err != nil {
 				return fmt.Errorf("delete from table %q page %d slot %d: %w", t.Name, matchInfo.PageID, matchInfo.SlotID, err)
+			}
+			if err := index.Delete(id); err != nil {
+				return fmt.Errorf("delete from table %q primary index key %d: %w", t.Name, id, err)
 			}
 		}
 	}

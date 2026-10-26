@@ -92,6 +92,9 @@ func TestTableThousandsOfInsertsAndTombstones(t *testing.T) {
 		}
 		deleted[i] = struct{}{}
 	}
+	if err := tbl.ValidatePrimaryIndex(); err != nil {
+		t.Fatalf("ValidatePrimaryIndex after deletes: %v", err)
+	}
 
 	if tbl.Pager.GetNumPages() != beforePages {
 		t.Fatalf("GetNumPages changed after tombstone deletes: before=%d after=%d", beforePages, tbl.Pager.GetNumPages())
@@ -350,8 +353,8 @@ func TestSelectByIDHandlesMissingAndDeletedRows(t *testing.T) {
 	if err := tbl.Delete([]table.ColEq{{ColIdx: 0, Value: "0"}}); err != nil {
 		t.Fatalf("Delete ID 0: %v", err)
 	}
-	if err := tbl.ValidatePrimaryIndex(); err == nil || !strings.Contains(err.Error(), "deleted row") {
-		t.Fatalf("ValidatePrimaryIndex after delete = %v, want stale deleted-row error", err)
+	if err := tbl.ValidatePrimaryIndex(); err != nil {
+		t.Fatalf("ValidatePrimaryIndex after delete: %v", err)
 	}
 	for _, id := range []string{"0", "99"} {
 		rows, err := tbl.Select([]string{"id", "name"}, []table.ColEq{{ColIdx: 0, Value: id}})
@@ -361,6 +364,17 @@ func TestSelectByIDHandlesMissingAndDeletedRows(t *testing.T) {
 		if len(rows) != 1 || rows[0][0] != "id" || rows[0][1] != "name" {
 			t.Fatalf("Select ID %s = %q, want header only", id, rows)
 		}
+	}
+	if err := tbl.Close(); err != nil {
+		t.Fatalf("Close before reopen: %v", err)
+	}
+	tbl, err = table.Open("select_deleted")
+	if err != nil {
+		t.Fatalf("Open after delete: %v", err)
+	}
+	t.Cleanup(func() { _ = tbl.Close() })
+	if err := tbl.ValidatePrimaryIndex(); err != nil {
+		t.Fatalf("ValidatePrimaryIndex after reopen: %v", err)
 	}
 
 	if err := tbl.Indexes["id"].UpdateRID(1, 1, 999); err != nil {

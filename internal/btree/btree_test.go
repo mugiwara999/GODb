@@ -117,6 +117,42 @@ func TestInsertRejectsDuplicateKeyWithoutChangingTree(t *testing.T) {
 	})
 }
 
+func TestDeleteSeparatorKeyKeepsTreeSearchable(t *testing.T) {
+	withIndex(t, "test_delete_separator", func(idx *Index) {
+		for i := 0; i < 600; i++ {
+			if err := idx.Insert(uint64(i), uint32(i), 0); err != nil {
+				t.Fatalf("Insert key %d: %v", i, err)
+			}
+		}
+
+		root, err := idx.GetRootPage()
+		if err != nil {
+			t.Fatalf("GetRootPage: %v", err)
+		}
+		if root.NodeType() != InternalNode || root.GetNumKeys() == 0 {
+			t.Fatalf("root = type %v with %d keys, want internal root", root.NodeType(), root.GetNumKeys())
+		}
+		// The final root separator routes into the rightmost leaf, which has
+		// spare capacity after this insert count. This isolates fence-key
+		// routing from underflow/rebalancing behavior.
+		key := root.GetKey(root.GetNumKeys() - 1)
+		if err := idx.Delete(key); err != nil {
+			t.Fatalf("Delete separator key %d: %v", key, err)
+		}
+		if _, err := idx.Find(key); !errors.Is(err, ErrKeyNotFound) {
+			t.Fatalf("Find deleted separator key error = %v, want ErrKeyNotFound", err)
+		}
+		for _, neighbor := range []uint64{key - 1, key + 1} {
+			if _, err := idx.Find(neighbor); err != nil {
+				t.Fatalf("Find neighbor %d after deletion: %v", neighbor, err)
+			}
+		}
+		if err := idx.Validate(); err != nil {
+			t.Fatalf("Validate after deleting separator key: %v", err)
+		}
+	})
+}
+
 func TestInvariantsAfterInsert(t *testing.T) {
 	withIndex(t, "test_inv", func(idx *Index) {
 		// Insert enough keys to guarantee at least 2 levels

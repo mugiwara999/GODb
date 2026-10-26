@@ -62,14 +62,23 @@
 - Verification: `GOCACHE=/tmp/goDB-gocache go test ./internal/pager ./internal/table` passed; full `GOCACHE=/tmp/goDB-gocache go test ./...` passed; `GOCACHE=/tmp/goDB-gocache go build ./...` passed; `GOCACHE=/tmp/goDB-gocache go vet ./...` passed; `git diff --check` passed.
 - Commit: `aa582ca` (`Validate slotted pages on read`).
 
+### Remove deleted row IDs from the primary B+ tree
+
+- Priority: correctness. Table DELETE previously tombstoned rows but left their ID keys in the primary index, so validation reported stale entries and every delete depended on SELECT special-casing tombstones.
+- Changes: added `Index.Delete` to remove a key from its sorted leaf and wired `Table.Delete` to remove each matched row's ID after persisting the tombstone. Internal separator keys remain as lower-bound fences; lookup of the deleted key returns `ErrKeyNotFound`. The structural validator now permits underfull and empty leaves because deletion does not yet merge/rebalance leaves; it continues to check page reachability, key order/ranges, parent links, leaf-chain order, and internal-node occupancy.
+- Regression coverage: deleted an internal separator key and verified its neighbors and tree structure; deleted rows across a multi-leaf table and checked primary-index consistency; verified deleted and absent ID lookups return header-only results; closed/reopened a table after deletion and revalidated the index.
+- Verification: `GOCACHE=/tmp/goDB-gocache go test ./...` passed; `GOCACHE=/tmp/goDB-gocache go build ./...` passed; `GOCACHE=/tmp/goDB-gocache go vet ./...` passed; `git diff --check` passed.
+- Limitations: leaf underflow is allowed and merged pages are not reclaimed, so repeated deletions can leave sparse or empty leaves and reduce index efficiency. Table mutation is not crash-atomic: an I/O failure between the row tombstone and index write can leave the two structures inconsistent. WAL/recovery and leaf rebalancing remain separate tasks.
+- Commit: `aadc7ea` (`Remove deleted rows from primary index`).
+
 ## Prioritized backlog
 
-1. **Remove deleted rows from the primary B+ tree.** The new validator detects tombstoned RIDs, but DELETE still leaves them in the index. This depends on a safe B+ tree key deletion/rebalancing design. Acceptance: after delete, indexed lookup remains empty, the table/index validator passes, and delete/reopen cases cover leaf and internal-node boundaries.
-2. **Add crash-safe table mutations.** Insert/update/delete write table pages, metadata, and indexes separately, so a process or I/O failure between writes can leave inconsistent state. Depends on a WAL or another recovery design. Acceptance: injected failures at each write boundary recover to a consistent table/index state across reopen.
-3. **Validate and harden B+ tree file metadata.** Index open still trusts some root/page counts. Acceptance: malformed/truncated metadata returns errors without panics and reopen tests cover supported empty and populated indexes.
-4. **Add SQL/parser integration tests and usability documentation.** Parser/lexer lack test files, despite supporting CREATE/INSERT/SELECT/DELETE/UPDATE. Acceptance: representative valid and malformed statements are covered, including EOF and separator edge cases.
-5. **Measure storage and index performance.** Existing insertion tests exercise large inputs but provide no benchmark baseline. Acceptance: add reproducible benchmarks for table insert/select and B+ tree insert/find before proposing optimization.
+1. **Rebalance and reclaim sparse B+ tree leaves after deletion.** The completed key deletion leaves underfull/empty leaves reachable and the validator no longer enforces leaf minimum occupancy. This depends on correct borrow/merge handling, root collapse, and free-page tracking compatible with existing index files. Risks include separator corruption and breaking reopen compatibility. Acceptance: repeated deletes preserve strict occupancy (except root), all pages are accounted for, keys remain searchable, and the table/index validator passes across reopen. Tests should delete through leaf and internal underflow, empty the index, then reinsert.
+2. **Add crash-safe table mutations.** Insert/update/delete write table pages, metadata, and indexes separately, so an I/O failure between writes can leave inconsistent state. Depends on a WAL or another recovery design. Acceptance: injected failures at each write boundary recover to a consistent table/index state across reopen. Tests should cover insert, update, and delete recovery and corrupted/incomplete log handling.
+3. **Validate and harden B+ tree file metadata.** Index open still trusts some root/page counts and metadata lengths. Risk: malformed files may panic or cause out-of-range reads. Acceptance: malformed/truncated metadata returns errors without panics, and reopen tests cover supported empty and populated indexes.
+4. **Add SQL/parser integration tests and usability documentation.** Parser/lexer lack test files despite supporting CREATE/INSERT/SELECT/DELETE/UPDATE. Acceptance: valid and malformed statements are covered, including EOF and separator edge cases; docs show supported syntax and error behavior.
+5. **Measure storage and index performance.** Existing insertion tests exercise large inputs but provide no benchmark baseline. Acceptance: reproducible benchmarks cover table insert/select and B+ tree insert/find with stated data sizes and report allocations before optimization proposals.
 
 ## Next action
 
-Next task: implement B+ tree key deletion and primary-index maintenance for table DELETE, using the validator to prove consistency before and after reopen. Preserve the supplied untracked `AGENTS.md`.
+Next task: implement leaf rebalancing and page reuse for B+ tree deletion, restore strict leaf occupancy validation, and add repeated-delete/reinsert/reopen tests. Preserve the supplied untracked `AGENTS.md`.

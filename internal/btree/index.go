@@ -580,6 +580,36 @@ func (ind *Index) UpdateRID(key uint64, pageID uint32, slotID uint16) error {
 	return fmt.Errorf("key %d not found for RID update", key)
 }
 
+// Delete removes an existing key from its leaf. Internal separator keys are
+// lower-bound fences, so they remain valid when the corresponding leaf key is
+// removed. The leaf's remaining entries stay sorted and the leaf chain is
+// unchanged.
+func (ind *Index) Delete(key uint64) error {
+	_, leaf, err := ind.FindLeaf(key)
+	if err != nil {
+		return fmt.Errorf("find key %d for deletion: %w", key, err)
+	}
+
+	numKeys := leaf.GetNumKeys()
+	for i := 0; i < numKeys; i++ {
+		if leaf.GetKey(i) != key {
+			continue
+		}
+
+		entryStart := LeafHeaderSize + i*LeafEntrySize
+		entryEnd := LeafHeaderSize + numKeys*LeafEntrySize
+		copy(leaf.Data[entryStart:entryEnd-LeafEntrySize], leaf.Data[entryStart+LeafEntrySize:entryEnd])
+		clear(leaf.Data[entryEnd-LeafEntrySize : entryEnd])
+		leaf.SetNumKeys(uint16(numKeys - 1))
+		if err := ind.WritePage(leaf); err != nil {
+			return fmt.Errorf("write leaf page %d after deleting key %d: %w", leaf.ID, key, err)
+		}
+		return nil
+	}
+
+	return fmt.Errorf("key %d: %w", key, ErrKeyNotFound)
+}
+
 func (ind *Index) PrintTree() error {
 	root, err := ind.GetRootPage()
 
@@ -680,7 +710,7 @@ func (ind *Index) FindLeftMostLeaf() (*BTreePage, error) {
 // min(right subtree) >= separator
 // parent pointers must be correct
 // pageID should be less than numPages
-// nodes must occupy more than half and less than full capacity (except root)
+// internal nodes must occupy more than half and less than full capacity (except root)
 // Leaf chain must be a sorted list
 
 var visitedPages []int64
@@ -824,15 +854,11 @@ func (ind *Index) validateNode(node *BTreePage, minKey, maxKey uint64, level int
 
 	numKeys := node.GetNumKeys()
 
-	if numKeys == 0 && node.ID != ind.rootPageID {
+	if numKeys == 0 && node.NodeType() == InternalNode && node.ID != ind.rootPageID {
 		return fmt.Errorf("node %d has no keys", node.ID)
 	}
 
 	if node.NodeType() == LeafNode {
-		if numKeys < MinKeysPerLeaf && node.ID != ind.rootPageID {
-			return fmt.Errorf("leaf node %d has too few keys: %d", node.ID, numKeys)
-		}
-
 		if numKeys > MaxKeysPerLeaf {
 			return fmt.Errorf("leaf node %d has too many keys: %d", node.ID, numKeys)
 		}
