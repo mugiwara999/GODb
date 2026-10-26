@@ -264,7 +264,20 @@ func (b *BTreePage) validateLeafWriteIndex(i int) error {
 	return nil
 }
 
-func (b *BTreePage) InsertIntoLeafAt(pos int, key uint64, id RID, numKeys int) {
+func (b *BTreePage) InsertIntoLeafAt(pos int, key uint64, id RID, numKeys int) error {
+	if b == nil {
+		return fmt.Errorf("insert leaf entry: nil page")
+	}
+	if b.NodeType() != LeafNode {
+		return fmt.Errorf("insert leaf entry on page %d: expected leaf node, got %d", b.ID, b.NodeType())
+	}
+	currentCount := b.GetNumKeys()
+	if currentCount > MaxKeysPerLeaf || numKeys != currentCount || numKeys >= MaxKeysPerLeaf {
+		return fmt.Errorf("insert leaf entry on page %d: invalid key count %d (argument %d)", b.ID, currentCount, numKeys)
+	}
+	if pos < 0 || pos > numKeys {
+		return fmt.Errorf("insert leaf entry position %d on page %d: expected [0, %d]", pos, b.ID, numKeys)
+	}
 
 	newData := make([]byte, 14)
 	binary.LittleEndian.PutUint64(newData[0:8], key)
@@ -275,9 +288,23 @@ func (b *BTreePage) InsertIntoLeafAt(pos int, key uint64, id RID, numKeys int) {
 	entryEnd := LeafHeaderSize + numKeys*14
 	copy(b.Data[entryStart+14:entryEnd+14], b.Data[entryStart:entryEnd])
 	copy(b.Data[entryStart:entryStart+14], newData)
+	return nil
 }
 
-func (b *BTreePage) InsertIntoInternalAt(pos int, key uint64, childPageID uint32, numKeys int) {
+func (b *BTreePage) InsertIntoInternalAt(pos int, key uint64, childPageID uint32, numKeys int) error {
+	if b == nil {
+		return fmt.Errorf("insert internal entry: nil page")
+	}
+	if b.NodeType() != InternalNode {
+		return fmt.Errorf("insert internal entry on page %d: expected internal node, got %d", b.ID, b.NodeType())
+	}
+	currentCount := b.GetNumKeys()
+	if currentCount > MaxKeysPerInternal || numKeys != currentCount || numKeys >= MaxKeysPerInternal {
+		return fmt.Errorf("insert internal entry on page %d: invalid key count %d (argument %d)", b.ID, currentCount, numKeys)
+	}
+	if pos < 0 || pos > numKeys {
+		return fmt.Errorf("insert internal entry position %d on page %d: expected [0, %d]", pos, b.ID, numKeys)
+	}
 
 	newData := make([]byte, 12)
 	binary.LittleEndian.PutUint64(newData[0:8], key)
@@ -287,6 +314,7 @@ func (b *BTreePage) InsertIntoInternalAt(pos int, key uint64, childPageID uint32
 	entryEnd := InternalHeaderSize + numKeys*InternalEntrySize
 	copy(b.Data[entryStart+InternalEntrySize:entryEnd+InternalEntrySize], b.Data[entryStart:entryEnd])
 	copy(b.Data[entryStart:entryStart+InternalEntrySize], newData)
+	return nil
 }
 
 func (b *BTreePage) GetNumKeys() int {
@@ -316,6 +344,9 @@ func (b *BTreePage) IncrementNumKeys() error {
 	return nil
 }
 
+// SetNumKeys writes the serialized count without validating it. Split and
+// rebalance helpers derive the value from checked page contents; tests may use
+// it to construct malformed pages for corruption checks.
 func (b *BTreePage) SetNumKeys(n uint16) {
 	binary.LittleEndian.PutUint16(b.Data[1:3], n)
 }

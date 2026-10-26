@@ -391,7 +391,9 @@ func (ind *Index) InsertIntoLeafPage(p *BTreePage, key uint64, id RID) (uint64, 
 		insertPos++
 	}
 
-	p.InsertIntoLeafAt(insertPos, key, id, numKeys)
+	if err := p.InsertIntoLeafAt(insertPos, key, id, numKeys); err != nil {
+		return 0, nil, err
+	}
 
 	if err := p.IncrementNumKeys(); err != nil {
 		return 0, nil, err
@@ -568,7 +570,9 @@ func (ind *Index) CreateNewRoot(oldRoot *BTreePage, ascendKey uint64, newPage *B
 	if err := newRoot.SetLeftmostChild(oldRoot.ID); err != nil {
 		return nil, err
 	}
-	newRoot.InsertIntoInternalAt(0, ascendKey, newPage.ID, 0)
+	if err := newRoot.InsertIntoInternalAt(0, ascendKey, newPage.ID, 0); err != nil {
+		return nil, err
+	}
 	if err := newRoot.IncrementNumKeys(); err != nil {
 		return nil, err
 	}
@@ -631,7 +635,9 @@ func (ind *Index) InsertIntoInternalPage(parent *BTreePage, key uint64, childPag
 
 	childPage.SetParentID(parent.ID)
 
-	parent.InsertIntoInternalAt(insertPos, key, childPageID, numKeys)
+	if err := parent.InsertIntoInternalAt(insertPos, key, childPageID, numKeys); err != nil {
+		return 0, nil, err
+	}
 
 	if err := parent.IncrementNumKeys(); err != nil {
 		return 0, nil, err
@@ -1404,7 +1410,9 @@ func (ind *Index) rebalanceLeaf(leaf *BTreePage) error {
 				return err
 			}
 			removeLeafEntry(left, last)
-			leaf.InsertIntoLeafAt(0, key, *rid, leafCount)
+			if err := leaf.InsertIntoLeafAt(0, key, *rid, leafCount); err != nil {
+				return err
+			}
 			leaf.SetNumKeys(uint16(leafCount + 1))
 			setInternalKey(parent, pos-1, key)
 			for _, page := range []*BTreePage{left, leaf, parent} {
@@ -1429,7 +1437,9 @@ func (ind *Index) rebalanceLeaf(leaf *BTreePage) error {
 			if err != nil {
 				return err
 			}
-			leaf.InsertIntoLeafAt(leafCount, key, *rid, leafCount)
+			if err := leaf.InsertIntoLeafAt(leafCount, key, *rid, leafCount); err != nil {
+				return err
+			}
 			leaf.SetNumKeys(uint16(leafCount + 1))
 			removeLeafEntry(right, 0)
 			newFirstKey, err := right.GetKey(0)

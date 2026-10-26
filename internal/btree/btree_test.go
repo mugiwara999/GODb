@@ -447,6 +447,101 @@ func TestPostingRIDAccessorsValidatePageAndIndex(t *testing.T) {
 	}
 }
 
+func TestInsertPageEntriesValidateLayoutAndBounds(t *testing.T) {
+	var nilPage *BTreePage
+	if err := nilPage.InsertIntoLeafAt(0, 1, RID{}, 0); err == nil {
+		t.Fatal("InsertIntoLeafAt accepted nil page")
+	}
+	if err := nilPage.InsertIntoInternalAt(0, 1, 2, 0); err == nil {
+		t.Fatal("InsertIntoInternalAt accepted nil page")
+	}
+
+	leaf := &BTreePage{ID: 1}
+	InitLeafPage(leaf)
+	leaf.SetNumKeys(1)
+	badLeaf := []struct {
+		name     string
+		page     *BTreePage
+		pos, num int
+	}{
+		{name: "wrong type", page: func() *BTreePage { p := &BTreePage{ID: 2}; InitInternalPage(p); return p }()},
+		{name: "negative position", page: leaf, pos: -1, num: 1},
+		{name: "past position", page: leaf, pos: 2, num: 1},
+		{name: "mismatched count", page: leaf, pos: 0, num: 0},
+		{name: "full count", page: func() *BTreePage { p := &BTreePage{}; InitLeafPage(p); p.SetNumKeys(MaxKeysPerLeaf); return p }(), pos: MaxKeysPerLeaf, num: MaxKeysPerLeaf},
+		{name: "corrupt count", page: func() *BTreePage { p := &BTreePage{}; InitLeafPage(p); p.SetNumKeys(^uint16(0)); return p }(), pos: 0, num: int(^uint16(0))},
+	}
+	for _, test := range badLeaf {
+		t.Run("leaf "+test.name, func(t *testing.T) {
+			before := test.page.Data
+			if err := test.page.InsertIntoLeafAt(test.pos, 5, RID{}, test.num); err == nil {
+				t.Fatal("InsertIntoLeafAt accepted malformed arguments")
+			}
+			if test.page.Data != before {
+				t.Fatal("failed InsertIntoLeafAt mutated page")
+			}
+		})
+	}
+
+	internal := &BTreePage{ID: 3}
+	InitInternalPage(internal)
+	internal.SetNumKeys(1)
+	badInternal := []struct {
+		name     string
+		page     *BTreePage
+		pos, num int
+	}{
+		{name: "wrong type", page: func() *BTreePage { p := &BTreePage{ID: 4}; InitLeafPage(p); return p }()},
+		{name: "negative position", page: internal, pos: -1, num: 1},
+		{name: "past position", page: internal, pos: 2, num: 1},
+		{name: "mismatched count", page: internal, pos: 0, num: 0},
+		{name: "full count", page: func() *BTreePage { p := &BTreePage{}; InitInternalPage(p); p.SetNumKeys(MaxKeysPerInternal); return p }(), pos: MaxKeysPerInternal, num: MaxKeysPerInternal},
+		{name: "corrupt count", page: func() *BTreePage { p := &BTreePage{}; InitInternalPage(p); p.SetNumKeys(^uint16(0)); return p }(), pos: 0, num: int(^uint16(0))},
+	}
+	for _, test := range badInternal {
+		t.Run("internal "+test.name, func(t *testing.T) {
+			before := test.page.Data
+			if err := test.page.InsertIntoInternalAt(test.pos, 5, 6, test.num); err == nil {
+				t.Fatal("InsertIntoInternalAt accepted malformed arguments")
+			}
+			if test.page.Data != before {
+				t.Fatal("failed InsertIntoInternalAt mutated page")
+			}
+		})
+	}
+
+	validLeaf := &BTreePage{}
+	InitLeafPage(validLeaf)
+	wantRID := RID{pageID: 7, slotID: 8}
+	if err := validLeaf.InsertIntoLeafAt(0, 9, wantRID, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := validLeaf.IncrementNumKeys(); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := validLeaf.GetKey(0); err != nil || got != 9 {
+		t.Fatalf("inserted key = %d, %v", got, err)
+	}
+	if got, err := validLeaf.GetRID(0); err != nil || *got != wantRID {
+		t.Fatalf("inserted RID = %+v, %v", got, err)
+	}
+
+	validInternal := &BTreePage{}
+	InitInternalPage(validInternal)
+	if err := validInternal.InsertIntoInternalAt(0, 10, 11, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := validInternal.IncrementNumKeys(); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := validInternal.GetKey(0); err != nil || got != 10 {
+		t.Fatalf("inserted internal key = %d, %v", got, err)
+	}
+	if got, err := validInternal.GetChild(1); err != nil || got != 11 {
+		t.Fatalf("inserted right child = %d, %v", got, err)
+	}
+}
+
 func withIndex(t *testing.T, colName string, fn func(*Index)) {
 	t.Helper()
 	dataDir := filepath.Join(t.TempDir(), "data")
