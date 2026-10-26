@@ -26,6 +26,7 @@ type NodeType uint8
 const (
 	LeafNode     NodeType = 1
 	InternalNode NodeType = 0
+	FreeNode     NodeType = 2
 )
 
 type BTreePage struct {

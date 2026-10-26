@@ -3,7 +3,8 @@ package btree
 import (
 	"errors"
 	"math/rand"
-	// "path/filepath"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -151,6 +152,138 @@ func TestDeleteSeparatorKeyKeepsTreeSearchable(t *testing.T) {
 			t.Fatalf("Validate after deleting separator key: %v", err)
 		}
 	})
+}
+
+func TestDeleteRebalancesCollapsesAndReusesPages(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "data")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatalf("create data directory: %v", err)
+	}
+	t.Setenv("DATA_DIR", dataDir)
+
+	idx, err := NewIndex("delete_rebalance", "id")
+	if err != nil {
+		t.Fatalf("NewIndex: %v", err)
+	}
+	t.Cleanup(func() { _ = idx.Close() })
+
+	const total = 50000 // enough leaves to force a multi-level internal tree
+	for key := 0; key < total; key++ {
+		if err := idx.Insert(uint64(key), uint32(key), 0); err != nil {
+			t.Fatalf("Insert key %d: %v", key, err)
+		}
+	}
+	allocatedPages := idx.GetNumPages()
+	root, err := idx.GetRootPage()
+	if err != nil {
+		t.Fatalf("GetRootPage before deletes: %v", err)
+	}
+	if root.NodeType() != InternalNode {
+		t.Fatalf("root type before deletes = %v, want internal tree", root.NodeType())
+	}
+	if err := idx.Validate(); err != nil {
+		t.Fatalf("Validate before deletes: %v", err)
+	}
+
+	for step := 0; step < total; step++ {
+		key := step / 2
+		if step%2 == 1 {
+			key = total - 1 - step/2
+		}
+		if err := idx.Delete(uint64(key)); err != nil {
+			t.Fatalf("Delete key %d: %v", key, err)
+		}
+		if step > 0 && step%5000 == 0 {
+			if err := idx.Validate(); err != nil {
+				t.Fatalf("Validate after %d deletes: %v", step+1, err)
+			}
+		}
+	}
+	if idx.GetNumPages() != allocatedPages {
+		t.Fatalf("page count after deleting all keys = %d, want %d (pages should be reusable, not truncated)", idx.GetNumPages(), allocatedPages)
+	}
+	if idx.freePageID == 0 {
+		t.Fatal("free list is empty after collapsing a multi-page tree")
+	}
+	root, err = idx.GetRootPage()
+	if err != nil {
+		t.Fatalf("GetRootPage after deletes: %v", err)
+	}
+	if root.NodeType() != LeafNode || root.GetNumKeys() != 0 {
+		t.Fatalf("root after deleting all keys = type %v with %d keys, want empty leaf", root.NodeType(), root.GetNumKeys())
+	}
+	if err := idx.Validate(); err != nil {
+		t.Fatalf("Validate empty tree: %v", err)
+	}
+
+	for key := 0; key < 1000; key++ {
+		if err := idx.Insert(uint64(total+key), uint32(key), 1); err != nil {
+			t.Fatalf("reinsert key %d: %v", total+key, err)
+		}
+	}
+	if idx.GetNumPages() != allocatedPages {
+		t.Fatalf("page count after reusing free pages = %d, want %d", idx.GetNumPages(), allocatedPages)
+	}
+	if err := idx.Validate(); err != nil {
+		t.Fatalf("Validate after page reuse: %v", err)
+	}
+	if err := idx.Close(); err != nil {
+		t.Fatalf("Close before reopen: %v", err)
+	}
+	idx, err = OpenIndex("delete_rebalance", "id")
+	if err != nil {
+		t.Fatalf("OpenIndex after page reuse: %v", err)
+	}
+	if err := idx.Validate(); err != nil {
+		t.Fatalf("Validate after reopen: %v", err)
+	}
+	for _, key := range []uint64{total, total + 1, total + 999} {
+		if _, err := idx.Find(key); err != nil {
+			t.Fatalf("Find reinserted key %d after reopen: %v", key, err)
+		}
+	}
+}
+
+func TestOpenIndexWithoutFreeListMetadata(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "data")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatalf("create data directory: %v", err)
+	}
+	t.Setenv("DATA_DIR", dataDir)
+
+	meta := &BTreePage{ID: metaPageID}
+	root := &BTreePage{ID: 1}
+	InitMetaPage(meta, "legacy_id")
+	InitLeafPage(root)
+	path := filepath.Join(dataDir, "legacy_id.idx")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create legacy index: %v", err)
+	}
+	if _, err := file.Write(meta.Data[:]); err != nil {
+		t.Fatalf("write legacy metadata: %v", err)
+	}
+	if _, err := file.Write(root.Data[:]); err != nil {
+		t.Fatalf("write legacy root: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close legacy index: %v", err)
+	}
+
+	idx, err := OpenIndex("legacy", "id")
+	if err != nil {
+		t.Fatalf("OpenIndex legacy format: %v", err)
+	}
+	t.Cleanup(func() { _ = idx.Close() })
+	if idx.freePageID != 0 {
+		t.Fatalf("legacy free-page head = %d, want zero", idx.freePageID)
+	}
+	if err := idx.Insert(7, 1, 0); err != nil {
+		t.Fatalf("Insert into legacy index: %v", err)
+	}
+	if err := idx.Validate(); err != nil {
+		t.Fatalf("Validate legacy index after insert: %v", err)
+	}
 }
 
 func TestInvariantsAfterInsert(t *testing.T) {

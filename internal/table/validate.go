@@ -10,8 +10,6 @@ import (
 
 // ValidatePrimaryIndex checks that every primary-index entry points to a live
 // row with the same ID and that every live row has the matching index entry.
-// Deleted rows leave stale entries until index deletion is implemented, so
-// those entries are reported as consistency errors.
 func (t *Table) ValidatePrimaryIndex() error {
 	if t == nil || t.Pager == nil {
 		return fmt.Errorf("validate primary index: table is not open")

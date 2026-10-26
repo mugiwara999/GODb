@@ -9,9 +9,11 @@ import (
 )
 
 type Index struct {
-	file       *os.File
-	rootPageID uint32
-	numPages   uint32
+	file           *os.File
+	rootPageID     uint32
+	numPages       uint32
+	freePageID     uint32
+	freeHeadOffset int
 }
 
 const (
@@ -42,6 +44,7 @@ var ErrDuplicateKey = errors.New("duplicate key")
 // Bytes 4 - 7:      numPages (4 bytes)
 // Bytes 8 - 11:     nameLen (4 bytes)
 // Bytes 12 - 12+nameLen: name (tableName_colName)
+// Next 4 bytes after the name: free-list head page ID (0 means no free pages)
 
 func NewIndex(tableName, colName string) (*Index, error) {
 
@@ -51,6 +54,10 @@ func NewIndex(tableName, colName string) (*Index, error) {
 		dir = "/home/rahul/Projects/goDB/data"
 	}
 
+	name := tableName + "_" + colName
+	if 12+len(name)+4 > PAGE_SIZE {
+		return nil, fmt.Errorf("index name is too long: %d bytes", len(name))
+	}
 	file, err := os.Create(fmt.Sprintf("%s/%s_%s.idx", dir, tableName, colName))
 
 	if err != nil {
@@ -69,7 +76,7 @@ func NewIndex(tableName, colName string) (*Index, error) {
 		Data: [PAGE_SIZE]byte{},
 	}
 
-	InitMetaPage(page, tableName+"_"+colName)
+	InitMetaPage(page, name)
 	InitLeafPage(rootPage)
 
 	n, err := file.Write(page.Data[:])
@@ -85,9 +92,10 @@ func NewIndex(tableName, colName string) (*Index, error) {
 	}
 
 	return &Index{
-		file:       file,
-		rootPageID: 1,
-		numPages:   2,
+		file:           file,
+		rootPageID:     1,
+		numPages:       2,
+		freeHeadOffset: 12 + len(name),
 	}, nil
 
 }
@@ -115,13 +123,22 @@ func OpenIndex(tableName, colName string) (*Index, error) {
 	rootPageID := binary.LittleEndian.Uint32(metaPage[0:4])
 
 	numPages := binary.LittleEndian.Uint32(metaPage[4:8])
+	nameLen := binary.LittleEndian.Uint32(metaPage[8:12])
+	if uint64(nameLen)+16 > PAGE_SIZE {
+		_ = file.Close()
+		return nil, fmt.Errorf("index metadata name length %d exceeds page capacity", nameLen)
+	}
+	freeHeadOffset := 12 + int(nameLen)
+	freePageID := binary.LittleEndian.Uint32(metaPage[freeHeadOffset : freeHeadOffset+4])
 
 	fi, _ := file.Stat()
 	fmt.Printf("Opened index %s_%s.idx, size=%d, rootPage=%d, numPages=%d\n", tableName, colName, fi.Size(), rootPageID, numPages)
 	return &Index{
-		file:       file,
-		rootPageID: rootPageID,
-		numPages:   numPages,
+		file:           file,
+		rootPageID:     rootPageID,
+		numPages:       numPages,
+		freePageID:     freePageID,
+		freeHeadOffset: freeHeadOffset,
 	}, nil
 
 }
@@ -158,19 +175,9 @@ func InitMetaPage(p *BTreePage, name string) {
 }
 
 func (ind *Index) NewLeafPage() (*BTreePage, error) {
-
-	data := [PAGE_SIZE]byte{}
-	id := ind.numPages
-
-	err := ind.SetNumPages(ind.numPages + 1)
-
+	page, err := ind.allocatePage(LeafNode)
 	if err != nil {
 		return nil, err
-	}
-
-	page := &BTreePage{
-		ID:   id,
-		Data: data,
 	}
 
 	InitLeafPage(page)
@@ -180,24 +187,92 @@ func (ind *Index) NewLeafPage() (*BTreePage, error) {
 }
 
 func (ind *Index) NewInternalPage() (*BTreePage, error) {
-
-	data := [PAGE_SIZE]byte{}
-	id := ind.numPages
-
-	err := ind.SetNumPages(ind.numPages + 1)
-
+	page, err := ind.allocatePage(InternalNode)
 	if err != nil {
 		return nil, err
-	}
-	page := &BTreePage{
-		ID:   id,
-		Data: data,
 	}
 
 	InitInternalPage(page)
 
 	return page, nil
 
+}
+
+func (ind *Index) allocatePage(nodeType NodeType) (*BTreePage, error) {
+	var pageID uint32
+	if ind.freePageID != 0 {
+		pageID = ind.freePageID
+		if pageID >= ind.numPages {
+			return nil, fmt.Errorf("free page ID %d is out of bounds (numPages=%d)", pageID, ind.numPages)
+		}
+		freePage, err := ind.GetPage(pageID)
+		if err != nil {
+			return nil, fmt.Errorf("read free page %d: %w", pageID, err)
+		}
+		if freePage.NodeType() != FreeNode {
+			return nil, fmt.Errorf("page %d on free list has node type %d", pageID, freePage.NodeType())
+		}
+		next := binary.LittleEndian.Uint32(freePage.Data[1:5])
+		if next != 0 && (next >= ind.numPages || next == pageID) {
+			return nil, fmt.Errorf("free page %d has invalid next page ID %d", pageID, next)
+		}
+		if err := ind.writeFreePageHead(next); err != nil {
+			return nil, err
+		}
+		ind.freePageID = next
+	} else {
+		if ind.numPages == math.MaxUint32 {
+			return nil, fmt.Errorf("index page ID space exhausted")
+		}
+		pageID = ind.numPages
+		if err := ind.SetNumPages(ind.numPages + 1); err != nil {
+			return nil, err
+		}
+	}
+
+	page := &BTreePage{ID: pageID}
+	if nodeType == LeafNode {
+		InitLeafPage(page)
+	} else {
+		InitInternalPage(page)
+	}
+	return page, nil
+}
+
+func (ind *Index) writeFreePageHead(pageID uint32) error {
+	metaPage, err := ind.GetPage(metaPageID)
+	if err != nil {
+		return fmt.Errorf("read index metadata for free list: %w", err)
+	}
+	binary.LittleEndian.PutUint32(metaPage.Data[ind.freeHeadOffset:ind.freeHeadOffset+4], pageID)
+	if err := ind.WritePage(metaPage); err != nil {
+		return fmt.Errorf("write index free-list head: %w", err)
+	}
+	return nil
+}
+
+func (ind *Index) freePage(pageID uint32) error {
+	if pageID == 0 || pageID >= ind.numPages || pageID == ind.rootPageID {
+		return fmt.Errorf("cannot free index page %d", pageID)
+	}
+	existing, err := ind.GetPage(pageID)
+	if err != nil {
+		return fmt.Errorf("read page %d before freeing: %w", pageID, err)
+	}
+	if existing.NodeType() == FreeNode {
+		return fmt.Errorf("index page %d is already free", pageID)
+	}
+	page := &BTreePage{ID: pageID}
+	page.Data[0] = byte(FreeNode)
+	binary.LittleEndian.PutUint32(page.Data[1:5], ind.freePageID)
+	if err := ind.WritePage(page); err != nil {
+		return fmt.Errorf("write free page %d: %w", pageID, err)
+	}
+	if err := ind.writeFreePageHead(pageID); err != nil {
+		return err
+	}
+	ind.freePageID = pageID
+	return nil
 }
 
 func (ind *Index) InsertIntoLeafPage(p *BTreePage, key uint64, id RID) (uint64, *BTreePage, error) {
@@ -515,15 +590,17 @@ func (ind *Index) WriteRootPageID() error {
 
 func (ind *Index) SetNumPages(n uint32) error {
 	metaPage, err := ind.GetPage(metaPageID)
-	ind.numPages = n
-
 	if err != nil {
 		return err
 	}
 
 	binary.LittleEndian.PutUint32(metaPage.Data[4:8], n)
 
-	return ind.WritePage(metaPage)
+	if err := ind.WritePage(metaPage); err != nil {
+		return err
+	}
+	ind.numPages = n
+	return nil
 }
 
 func (ind *Index) Close() error {
@@ -580,10 +657,8 @@ func (ind *Index) UpdateRID(key uint64, pageID uint32, slotID uint16) error {
 	return fmt.Errorf("key %d not found for RID update", key)
 }
 
-// Delete removes an existing key from its leaf. Internal separator keys are
-// lower-bound fences, so they remain valid when the corresponding leaf key is
-// removed. The leaf's remaining entries stay sorted and the leaf chain is
-// unchanged.
+// Delete removes an existing key and rebalances underfull nodes by borrowing
+// from a sibling or merging pages. Merged pages are linked into the free list.
 func (ind *Index) Delete(key uint64) error {
 	_, leaf, err := ind.FindLeaf(key)
 	if err != nil {
@@ -596,18 +671,407 @@ func (ind *Index) Delete(key uint64) error {
 			continue
 		}
 
-		entryStart := LeafHeaderSize + i*LeafEntrySize
-		entryEnd := LeafHeaderSize + numKeys*LeafEntrySize
-		copy(leaf.Data[entryStart:entryEnd-LeafEntrySize], leaf.Data[entryStart+LeafEntrySize:entryEnd])
-		clear(leaf.Data[entryEnd-LeafEntrySize : entryEnd])
-		leaf.SetNumKeys(uint16(numKeys - 1))
-		if err := ind.WritePage(leaf); err != nil {
-			return fmt.Errorf("write leaf page %d after deleting key %d: %w", leaf.ID, key, err)
+		removeLeafEntry(leaf, i)
+		if leaf.ID == ind.rootPageID || leaf.GetNumKeys() >= MinKeysPerLeaf {
+			return ind.WritePage(leaf)
 		}
-		return nil
+		return ind.rebalanceLeaf(leaf)
 	}
 
 	return fmt.Errorf("key %d: %w", key, ErrKeyNotFound)
+}
+
+func removeLeafEntry(leaf *BTreePage, pos int) {
+	numKeys := leaf.GetNumKeys()
+	start := LeafHeaderSize + pos*LeafEntrySize
+	end := LeafHeaderSize + numKeys*LeafEntrySize
+	copy(leaf.Data[start:end-LeafEntrySize], leaf.Data[start+LeafEntrySize:end])
+	clear(leaf.Data[end-LeafEntrySize : end])
+	leaf.SetNumKeys(uint16(numKeys - 1))
+}
+
+func readInternal(p *BTreePage) ([]uint32, []uint64) {
+	n := p.GetNumKeys()
+	children := make([]uint32, n+1)
+	keys := make([]uint64, n)
+	for i := range children {
+		children[i] = p.GetChild(uint32(i))
+	}
+	for i := range keys {
+		keys[i] = p.GetKey(i)
+	}
+	return children, keys
+}
+
+func writeInternal(p *BTreePage, children []uint32, keys []uint64) error {
+	if len(children) != len(keys)+1 || len(keys) > MaxKeysPerInternal {
+		return fmt.Errorf("invalid internal node contents: %d children, %d keys", len(children), len(keys))
+	}
+	clear(p.Data[InternalHeaderSize:])
+	p.SetLeftmostChild(children[0])
+	for i, key := range keys {
+		offset := InternalHeaderSize + i*InternalEntrySize
+		binary.LittleEndian.PutUint64(p.Data[offset:offset+8], key)
+		binary.LittleEndian.PutUint32(p.Data[offset+8:offset+12], children[i+1])
+	}
+	p.SetNumKeys(uint16(len(keys)))
+	return nil
+}
+
+func setInternalKey(p *BTreePage, pos int, key uint64) {
+	offset := InternalHeaderSize + pos*InternalEntrySize
+	binary.LittleEndian.PutUint64(p.Data[offset:offset+8], key)
+}
+
+func removeChild(children []uint32, keys []uint64, childPos int) ([]uint32, []uint64) {
+	children = append(children[:childPos], children[childPos+1:]...)
+	keyPos := childPos - 1
+	if keyPos < 0 {
+		keyPos = 0
+	}
+	keys = append(keys[:keyPos], keys[keyPos+1:]...)
+	return children, keys
+}
+
+func childPosition(parent *BTreePage, childID uint32) (int, error) {
+	children, _ := readInternal(parent)
+	for pos, id := range children {
+		if id == childID {
+			return pos, nil
+		}
+	}
+	return 0, fmt.Errorf("page %d is not a child of parent %d", childID, parent.ID)
+}
+
+func (ind *Index) subtreeMin(pageID uint32) (uint64, error) {
+	page, err := ind.GetPage(pageID)
+	if err != nil {
+		return 0, err
+	}
+	for page.NodeType() == InternalNode {
+		page, err = ind.GetPage(page.GetChild(0))
+		if err != nil {
+			return 0, err
+		}
+	}
+	if page.NodeType() != LeafNode || page.GetNumKeys() == 0 {
+		return 0, fmt.Errorf("subtree rooted at page %d has no minimum key", pageID)
+	}
+	return page.GetKey(0), nil
+}
+
+func (ind *Index) rebalanceLeaf(leaf *BTreePage) error {
+	parent, err := ind.GetPage(leaf.ParentID())
+	if err != nil {
+		return err
+	}
+	children, keys := readInternal(parent)
+	pos, err := childPosition(parent, leaf.ID)
+	if err != nil {
+		return err
+	}
+	leafCount := leaf.GetNumKeys()
+
+	if pos > 0 {
+		left, err := ind.GetPage(children[pos-1])
+		if err != nil {
+			return err
+		}
+		if left.GetNumKeys() > MinKeysPerLeaf {
+			last := left.GetNumKeys() - 1
+			key, rid := left.GetKey(last), left.GetRID(last)
+			removeLeafEntry(left, last)
+			leaf.InsertIntoLeafAt(0, key, *rid, leafCount)
+			leaf.SetNumKeys(uint16(leafCount + 1))
+			setInternalKey(parent, pos-1, key)
+			for _, page := range []*BTreePage{left, leaf, parent} {
+				if err := ind.WritePage(page); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+	}
+	if pos+1 < len(children) {
+		right, err := ind.GetPage(children[pos+1])
+		if err != nil {
+			return err
+		}
+		if right.GetNumKeys() > MinKeysPerLeaf {
+			key, rid := right.GetKey(0), right.GetRID(0)
+			leaf.InsertIntoLeafAt(leafCount, key, *rid, leafCount)
+			leaf.SetNumKeys(uint16(leafCount + 1))
+			removeLeafEntry(right, 0)
+			setInternalKey(parent, pos, right.GetKey(0))
+			for _, page := range []*BTreePage{leaf, right, parent} {
+				if err := ind.WritePage(page); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+	}
+
+	if pos > 0 {
+		left, err := ind.GetPage(children[pos-1])
+		if err != nil {
+			return err
+		}
+		leftCount := left.GetNumKeys()
+		copy(left.Data[LeafHeaderSize+leftCount*LeafEntrySize:], leaf.Data[LeafHeaderSize:LeafHeaderSize+leafCount*LeafEntrySize])
+		left.SetNumKeys(uint16(leftCount + leafCount))
+		left.SetNextLeaf(leaf.NextLeaf())
+		children, keys = removeChild(children, keys, pos)
+		if err := writeInternal(parent, children, keys); err != nil {
+			return err
+		}
+		if err := ind.WritePage(left); err != nil {
+			return err
+		}
+		if err := ind.WritePage(parent); err != nil {
+			return err
+		}
+		if err := ind.freePage(leaf.ID); err != nil {
+			return err
+		}
+		return ind.rebalanceInternal(parent)
+	}
+
+	right, err := ind.GetPage(children[pos+1])
+	if err != nil {
+		return err
+	}
+	rightCount := right.GetNumKeys()
+	copy(leaf.Data[LeafHeaderSize+leafCount*LeafEntrySize:], right.Data[LeafHeaderSize:LeafHeaderSize+rightCount*LeafEntrySize])
+	leaf.SetNumKeys(uint16(leafCount + rightCount))
+	leaf.SetNextLeaf(right.NextLeaf())
+	children, keys = removeChild(children, keys, pos+1)
+	if err := writeInternal(parent, children, keys); err != nil {
+		return err
+	}
+	if err := ind.WritePage(leaf); err != nil {
+		return err
+	}
+	if err := ind.WritePage(parent); err != nil {
+		return err
+	}
+	if err := ind.freePage(right.ID); err != nil {
+		return err
+	}
+	return ind.rebalanceInternal(parent)
+}
+
+func (ind *Index) rebalanceInternal(node *BTreePage) error {
+	if node.ID == ind.rootPageID {
+		if node.GetNumKeys() == 0 {
+			childID := node.GetChild(0)
+			child, err := ind.GetPage(childID)
+			if err != nil {
+				return err
+			}
+			child.SetParentID(0)
+			if err := ind.WritePage(child); err != nil {
+				return err
+			}
+			oldRootID := ind.rootPageID
+			ind.rootPageID = childID
+			if err := ind.WriteRootPageID(); err != nil {
+				ind.rootPageID = oldRootID
+				return err
+			}
+			return ind.freePage(oldRootID)
+		}
+		return ind.WritePage(node)
+	}
+	if node.GetNumKeys() >= MinKeysPerInternal {
+		return ind.WritePage(node)
+	}
+
+	parent, err := ind.GetPage(node.ParentID())
+	if err != nil {
+		return err
+	}
+	parentChildren, parentKeys := readInternal(parent)
+	pos, err := childPosition(parent, node.ID)
+	if err != nil {
+		return err
+	}
+	children, keys := readInternal(node)
+
+	if pos > 0 {
+		left, err := ind.GetPage(parentChildren[pos-1])
+		if err != nil {
+			return err
+		}
+		leftChildren, leftKeys := readInternal(left)
+		if len(leftKeys) > MinKeysPerInternal {
+			movedChild := leftChildren[len(leftChildren)-1]
+			newParentKey, err := ind.subtreeMin(movedChild)
+			if err != nil {
+				return err
+			}
+			newNodeKey, err := ind.subtreeMin(children[0])
+			if err != nil {
+				return err
+			}
+			leftChildren = leftChildren[:len(leftChildren)-1]
+			leftKeys = leftKeys[:len(leftKeys)-1]
+			children = append([]uint32{movedChild}, children...)
+			keys = append([]uint64{newNodeKey}, keys...)
+			parentKeys[pos-1] = newParentKey
+			if err := writeInternal(left, leftChildren, leftKeys); err != nil {
+				return err
+			}
+			if err := writeInternal(node, children, keys); err != nil {
+				return err
+			}
+			if err := writeInternal(parent, parentChildren, parentKeys); err != nil {
+				return err
+			}
+			moved, err := ind.GetPage(movedChild)
+			if err != nil {
+				return err
+			}
+			moved.SetParentID(node.ID)
+			if err := ind.WritePage(moved); err != nil {
+				return err
+			}
+			for _, page := range []*BTreePage{left, node, parent} {
+				if err := ind.WritePage(page); err != nil {
+					return err
+				}
+			}
+			return ind.rebalanceInternal(node)
+		}
+	}
+	if pos+1 < len(parentChildren) {
+		right, err := ind.GetPage(parentChildren[pos+1])
+		if err != nil {
+			return err
+		}
+		rightChildren, rightKeys := readInternal(right)
+		if len(rightKeys) > MinKeysPerInternal {
+			movedChild := rightChildren[0]
+			newParentKey, err := ind.subtreeMin(rightChildren[1])
+			if err != nil {
+				return err
+			}
+			newNodeKey, err := ind.subtreeMin(movedChild)
+			if err != nil {
+				return err
+			}
+			children = append(children, movedChild)
+			keys = append(keys, newNodeKey)
+			rightChildren = rightChildren[1:]
+			rightKeys = rightKeys[1:]
+			parentKeys[pos] = newParentKey
+			if err := writeInternal(node, children, keys); err != nil {
+				return err
+			}
+			if err := writeInternal(right, rightChildren, rightKeys); err != nil {
+				return err
+			}
+			if err := writeInternal(parent, parentChildren, parentKeys); err != nil {
+				return err
+			}
+			moved, err := ind.GetPage(movedChild)
+			if err != nil {
+				return err
+			}
+			moved.SetParentID(node.ID)
+			if err := ind.WritePage(moved); err != nil {
+				return err
+			}
+			for _, page := range []*BTreePage{node, right, parent} {
+				if err := ind.WritePage(page); err != nil {
+					return err
+				}
+			}
+			return ind.rebalanceInternal(node)
+		}
+	}
+
+	if pos > 0 {
+		left, err := ind.GetPage(parentChildren[pos-1])
+		if err != nil {
+			return err
+		}
+		leftChildren, leftKeys := readInternal(left)
+		bridgeKey, err := ind.subtreeMin(children[0])
+		if err != nil {
+			return err
+		}
+		leftKeys = append(leftKeys, bridgeKey)
+		leftKeys = append(leftKeys, keys...)
+		leftChildren = append(leftChildren, children...)
+		if err := writeInternal(left, leftChildren, leftKeys); err != nil {
+			return err
+		}
+		for _, childID := range children {
+			child, err := ind.GetPage(childID)
+			if err != nil {
+				return err
+			}
+			child.SetParentID(left.ID)
+			if err := ind.WritePage(child); err != nil {
+				return err
+			}
+		}
+		parentChildren, parentKeys = removeChild(parentChildren, parentKeys, pos)
+		if err := writeInternal(parent, parentChildren, parentKeys); err != nil {
+			return err
+		}
+		if err := ind.WritePage(left); err != nil {
+			return err
+		}
+		if err := ind.WritePage(parent); err != nil {
+			return err
+		}
+		if err := ind.freePage(node.ID); err != nil {
+			return err
+		}
+		return ind.rebalanceInternal(parent)
+	}
+
+	right, err := ind.GetPage(parentChildren[pos+1])
+	if err != nil {
+		return err
+	}
+	rightChildren, rightKeys := readInternal(right)
+	bridgeKey, err := ind.subtreeMin(rightChildren[0])
+	if err != nil {
+		return err
+	}
+	keys = append(keys, bridgeKey)
+	keys = append(keys, rightKeys...)
+	children = append(children, rightChildren...)
+	if err := writeInternal(node, children, keys); err != nil {
+		return err
+	}
+	for _, childID := range rightChildren {
+		child, err := ind.GetPage(childID)
+		if err != nil {
+			return err
+		}
+		child.SetParentID(node.ID)
+		if err := ind.WritePage(child); err != nil {
+			return err
+		}
+	}
+	parentChildren, parentKeys = removeChild(parentChildren, parentKeys, pos+1)
+	if err := writeInternal(parent, parentChildren, parentKeys); err != nil {
+		return err
+	}
+	if err := ind.WritePage(node); err != nil {
+		return err
+	}
+	if err := ind.WritePage(parent); err != nil {
+		return err
+	}
+	if err := ind.freePage(right.ID); err != nil {
+		return err
+	}
+	return ind.rebalanceInternal(parent)
 }
 
 func (ind *Index) PrintTree() error {
@@ -822,9 +1286,27 @@ func (ind *Index) Validate() error {
 
 	}
 
+	for freeID := ind.freePageID; freeID != 0; {
+		if freeID >= ind.numPages {
+			return fmt.Errorf("free page ID %d is out of bounds (numPages=%d)", freeID, ind.numPages)
+		}
+		if visitedPages[freeID] != -1 {
+			return fmt.Errorf("free page %d is already reachable or appears more than once", freeID)
+		}
+		freePage, err := ind.GetPage(freeID)
+		if err != nil {
+			return fmt.Errorf("read free page %d: %w", freeID, err)
+		}
+		if freePage.NodeType() != FreeNode {
+			return fmt.Errorf("free list page %d has node type %d", freeID, freePage.NodeType())
+		}
+		visitedPages[freeID] = -2
+		freeID = binary.LittleEndian.Uint32(freePage.Data[1:5])
+	}
+
 	for i := 1; i < len(visitedPages); i++ {
 		if visitedPages[i] == -1 {
-			return fmt.Errorf("page %d was not visited during validation", i)
+			return fmt.Errorf("page %d is neither reachable nor free", i)
 		}
 	}
 
@@ -853,12 +1335,18 @@ func (ind *Index) validateNode(node *BTreePage, minKey, maxKey uint64, level int
 	visitedPages[node.ID] = int64(level)
 
 	numKeys := node.GetNumKeys()
+	if node.NodeType() != LeafNode && node.NodeType() != InternalNode {
+		return fmt.Errorf("node %d has invalid node type %d", node.ID, node.NodeType())
+	}
 
 	if numKeys == 0 && node.NodeType() == InternalNode && node.ID != ind.rootPageID {
 		return fmt.Errorf("node %d has no keys", node.ID)
 	}
 
 	if node.NodeType() == LeafNode {
+		if numKeys < MinKeysPerLeaf && node.ID != ind.rootPageID {
+			return fmt.Errorf("leaf node %d has too few keys: %d", node.ID, numKeys)
+		}
 		if numKeys > MaxKeysPerLeaf {
 			return fmt.Errorf("leaf node %d has too many keys: %d", node.ID, numKeys)
 		}
