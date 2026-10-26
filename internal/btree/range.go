@@ -84,7 +84,11 @@ func (ind *Index) RangeIterator(lower *uint64, lowerInclusive bool, upper *uint6
 	it.leaf = leaf
 	it.seenLeaves = map[uint32]struct{}{leaf.ID: {}}
 	if lower != nil {
-		low, high := 0, leaf.GetNumKeys()
+		keyCount, err := leaf.GetNumKeys()
+		if err != nil {
+			return nil, err
+		}
+		low, high := 0, keyCount
 		for low < high {
 			mid := low + (high-low)/2
 			key, err := leaf.GetKey(mid)
@@ -133,7 +137,11 @@ func (ind *Index) RangeRIDIterator(lower *uint64, lowerInclusive bool, upper *ui
 	it.leaf = leaf
 	it.seenLeaves = map[uint32]struct{}{leaf.ID: {}}
 	if lower != nil {
-		low, high := 0, leaf.GetNumKeys()
+		keyCount, err := leaf.GetNumKeys()
+		if err != nil {
+			return nil, err
+		}
+		low, high := 0, keyCount
 		for low < high {
 			mid := low + (high-low)/2
 			key, err := leaf.GetKey(mid)
@@ -252,7 +260,12 @@ func (it *RangeRIDIterator) Next() (entry RangeRIDEntry, ok bool, err error) {
 			it.done = true
 			return RangeRIDEntry{}, false, nil
 		}
-		if it.keyIndex >= it.leaf.GetNumKeys() {
+		keyCount, err := it.leaf.GetNumKeys()
+		if err != nil {
+			it.done = true
+			return RangeRIDEntry{}, false, err
+		}
+		if it.keyIndex >= keyCount {
 			next, err := it.leaf.NextLeaf()
 			if err != nil {
 				it.done = true
@@ -319,7 +332,12 @@ func (it *RangeIterator) Next() (entry RangeEntry, ok bool, err error) {
 		return RangeEntry{}, false, nil
 	}
 	for it.leaf != nil {
-		for it.keyIndex < it.leaf.GetNumKeys() {
+		keyCount, err := it.leaf.GetNumKeys()
+		if err != nil {
+			it.done = true
+			return RangeEntry{}, false, err
+		}
+		for it.keyIndex < keyCount {
 			key, err := it.leaf.GetKey(it.keyIndex)
 			if err != nil {
 				it.done = true

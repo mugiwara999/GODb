@@ -46,7 +46,11 @@ func (t *Table) validatePrimaryIndex() error {
 			return fmt.Errorf("validate primary index for table %q: leaf chain cycles at page %d", t.Name, leaf.ID)
 		}
 		visitedLeaves[leaf.ID] = true
-		for i := 0; i < leaf.GetNumKeys(); i++ {
+		keyCount, err := leaf.GetNumKeys()
+		if err != nil {
+			return fmt.Errorf("validate primary index for table %q: %w", t.Name, err)
+		}
+		for i := 0; i < keyCount; i++ {
 			key, err := leaf.GetKey(i)
 			if err != nil {
 				return fmt.Errorf("validate primary index for table %q: read key from leaf %d: %w", t.Name, leaf.ID, err)
@@ -183,7 +187,11 @@ func (t *Table) ValidateIndexes() error {
 		}
 		visitedKeys := make(map[uint64]struct{})
 		for leaf != nil {
-			for i := 0; i < leaf.GetNumKeys(); i++ {
+			keyCount, err := leaf.GetNumKeys()
+			if err != nil {
+				return fmt.Errorf("validate secondary index %q: %w", column, err)
+			}
+			for i := 0; i < keyCount; i++ {
 				key, err := leaf.GetKey(i)
 				if err != nil {
 					return fmt.Errorf("validate secondary index %q: read key from leaf %d: %w", column, leaf.ID, err)

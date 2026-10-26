@@ -106,8 +106,8 @@ func TestFailedLeafRebalanceRestoresAllWrittenPages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if leaf.GetNumKeys() != MinKeysPerLeaf {
-		t.Fatalf("left leaf keys before delete = %d, want minimum %d", leaf.GetNumKeys(), MinKeysPerLeaf)
+	if mustGetNumKeys(t, leaf) != MinKeysPerLeaf {
+		t.Fatalf("left leaf keys before delete = %d, want minimum %d", mustGetNumKeys(t, leaf), MinKeysPerLeaf)
 	}
 	journal, err := wal.Begin(index.path + ".wal")
 	if err != nil {
@@ -166,8 +166,8 @@ func TestFailedRootCollapseRestoresRootMetadataAndPages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if root.NodeType() != InternalNode || root.GetNumKeys() != 1 {
-		t.Fatalf("prepared root type/count = %d/%d, want internal/1", root.NodeType(), root.GetNumKeys())
+	if root.NodeType() != InternalNode || mustGetNumKeys(t, root) != 1 {
+		t.Fatalf("prepared root type/count = %d/%d, want internal/1", root.NodeType(), mustGetNumKeys(t, root))
 	}
 	leftChild, err := root.GetChild(0)
 	if err != nil {
@@ -185,8 +185,8 @@ func TestFailedRootCollapseRestoresRootMetadataAndPages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if left.GetNumKeys() != MinKeysPerLeaf || right.GetNumKeys() != MinKeysPerLeaf {
-		t.Fatalf("prepared leaf counts = %d/%d, want %d/%d", left.GetNumKeys(), right.GetNumKeys(), MinKeysPerLeaf, MinKeysPerLeaf)
+	if mustGetNumKeys(t, left) != MinKeysPerLeaf || mustGetNumKeys(t, right) != MinKeysPerLeaf {
+		t.Fatalf("prepared leaf counts = %d/%d, want %d/%d", mustGetNumKeys(t, left), mustGetNumKeys(t, right), MinKeysPerLeaf, MinKeysPerLeaf)
 	}
 
 	journal, err := wal.Begin(index.path + ".wal")
@@ -223,8 +223,8 @@ func TestFailedRootCollapseRestoresRootMetadataAndPages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if root.NodeType() != InternalNode || root.GetNumKeys() != 1 {
-		t.Fatalf("root after rollback type/count = %d/%d, want internal/1", root.NodeType(), root.GetNumKeys())
+	if root.NodeType() != InternalNode || mustGetNumKeys(t, root) != 1 {
+		t.Fatalf("root after rollback type/count = %d/%d, want internal/1", root.NodeType(), mustGetNumKeys(t, root))
 	}
 	if _, err := index.Find(0); err != nil {
 		t.Fatalf("Find key 0 after rollback: %v", err)
@@ -252,8 +252,8 @@ func TestFailedInternalMergeRestoresChildParentsAndRoot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if root.NodeType() != InternalNode || root.GetNumKeys() != 1 {
-		t.Fatalf("prepared root type/count = %d/%d, want internal/1", root.NodeType(), root.GetNumKeys())
+	if root.NodeType() != InternalNode || mustGetNumKeys(t, root) != 1 {
+		t.Fatalf("prepared root type/count = %d/%d, want internal/1", root.NodeType(), mustGetNumKeys(t, root))
 	}
 	leftChild, err := root.GetChild(0)
 	if err != nil {
@@ -271,8 +271,8 @@ func TestFailedInternalMergeRestoresChildParentsAndRoot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if leftInternal.NodeType() != InternalNode || rightInternal.NodeType() != InternalNode || leftInternal.GetNumKeys() != MinKeysPerInternal || rightInternal.GetNumKeys() != MinKeysPerInternal {
-		t.Fatalf("prepared root children type/count = %d/%d and %d/%d", leftInternal.NodeType(), leftInternal.GetNumKeys(), rightInternal.NodeType(), rightInternal.GetNumKeys())
+	if leftInternal.NodeType() != InternalNode || rightInternal.NodeType() != InternalNode || mustGetNumKeys(t, leftInternal) != MinKeysPerInternal || mustGetNumKeys(t, rightInternal) != MinKeysPerInternal {
+		t.Fatalf("prepared root children type/count = %d/%d and %d/%d", leftInternal.NodeType(), mustGetNumKeys(t, leftInternal), rightInternal.NodeType(), mustGetNumKeys(t, rightInternal))
 	}
 	children, _, err := readInternal(leftInternal)
 	if err != nil {
@@ -289,7 +289,7 @@ func TestFailedInternalMergeRestoresChildParentsAndRoot(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if leftLeaf.NodeType() == LeafNode && rightLeaf.NodeType() == LeafNode && leftLeaf.GetNumKeys() == MinKeysPerLeaf && rightLeaf.GetNumKeys() == MinKeysPerLeaf {
+		if leftLeaf.NodeType() == LeafNode && rightLeaf.NodeType() == LeafNode && mustGetNumKeys(t, leftLeaf) == MinKeysPerLeaf && mustGetNumKeys(t, rightLeaf) == MinKeysPerLeaf {
 			deleteKey, err = leftLeaf.GetKey(0)
 			if err != nil {
 				t.Fatal(err)
@@ -342,7 +342,7 @@ func TestFailedInternalMergeRestoresChildParentsAndRoot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if root.NodeType() != InternalNode || root.GetNumKeys() != 1 {
-		t.Fatalf("root after rollback type/count = %d/%d, want internal/1", root.NodeType(), root.GetNumKeys())
+	if root.NodeType() != InternalNode || mustGetNumKeys(t, root) != 1 {
+		t.Fatalf("root after rollback type/count = %d/%d, want internal/1", root.NodeType(), mustGetNumKeys(t, root))
 	}
 }

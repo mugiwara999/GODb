@@ -19,6 +19,15 @@ func setRawPageCountForTest(page *BTreePage, count uint16) {
 	binary.LittleEndian.PutUint16(page.Data[1:3], count)
 }
 
+func mustGetNumKeys(t testing.TB, page *BTreePage) int {
+	t.Helper()
+	count, err := page.GetNumKeys()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return count
+}
+
 func TestBTreeLeafSettersValidateBoundsAndPageType(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -418,7 +427,7 @@ func TestIncrementNumKeysChecksNodeCapacity(t *testing.T) {
 			if err := page.IncrementNumKeys(); err != nil {
 				t.Fatalf("increment to capacity: %v", err)
 			}
-			if got := page.GetNumKeys(); got != test.max {
+			if got := mustGetNumKeys(t, page); got != test.max {
 				t.Fatalf("key count = %d, want %d", got, test.max)
 			}
 		})
@@ -462,8 +471,50 @@ func TestSetNumKeysValidatesNodeCapacity(t *testing.T) {
 			if err := page.SetNumKeys(test.count); err != nil {
 				t.Fatal(err)
 			}
-			if got := page.GetNumKeys(); got != int(test.count) {
+			if got := mustGetNumKeys(t, page); got != int(test.count) {
 				t.Fatalf("key count = %d, want %d", got, test.count)
+			}
+		})
+	}
+}
+
+func TestGetNumKeysValidatesNodeTypeAndCapacity(t *testing.T) {
+	var nilPage *BTreePage
+	if _, err := nilPage.GetNumKeys(); err == nil {
+		t.Fatal("GetNumKeys accepted nil page")
+	}
+	tests := []struct {
+		name  string
+		page  *BTreePage
+		count uint16
+	}{
+		{name: "posting page", page: &BTreePage{Data: [PAGE_SIZE]byte{byte(PostingNode)}}, count: 0},
+		{name: "free page", page: &BTreePage{Data: [PAGE_SIZE]byte{byte(FreeNode)}}, count: 0},
+		{name: "invalid page", page: &BTreePage{Data: [PAGE_SIZE]byte{0xff}}, count: 0},
+		{name: "leaf overflow", page: func() *BTreePage { p := &BTreePage{}; InitLeafPage(p); return p }(), count: uint16(MaxKeysPerLeaf + 1)},
+		{name: "internal overflow", page: func() *BTreePage { p := &BTreePage{}; InitInternalPage(p); return p }(), count: uint16(MaxKeysPerInternal + 1)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			setRawPageCountForTest(test.page, test.count)
+			if _, err := test.page.GetNumKeys(); err == nil {
+				t.Fatal("GetNumKeys accepted invalid page type or count")
+			}
+		})
+	}
+	for _, test := range []struct {
+		name  string
+		init  func(*BTreePage)
+		count uint16
+	}{{"empty leaf", InitLeafPage, 0}, {"full leaf", InitLeafPage, uint16(MaxKeysPerLeaf)}, {"empty internal", InitInternalPage, 0}, {"full internal", InitInternalPage, uint16(MaxKeysPerInternal)}} {
+		t.Run(test.name, func(t *testing.T) {
+			page := &BTreePage{}
+			test.init(page)
+			if err := page.SetNumKeys(test.count); err != nil {
+				t.Fatal(err)
+			}
+			if got, err := page.GetNumKeys(); err != nil || got != int(test.count) {
+				t.Fatalf("GetNumKeys = %d, %v; want %d", got, err, test.count)
 			}
 		})
 	}
@@ -901,13 +952,13 @@ func TestDeleteSeparatorKeyKeepsTreeSearchable(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GetRootPage: %v", err)
 		}
-		if root.NodeType() != InternalNode || root.GetNumKeys() == 0 {
-			t.Fatalf("root = type %v with %d keys, want internal root", root.NodeType(), root.GetNumKeys())
+		if root.NodeType() != InternalNode || mustGetNumKeys(t, root) == 0 {
+			t.Fatalf("root = type %v with %d keys, want internal root", root.NodeType(), mustGetNumKeys(t, root))
 		}
 		// The final root separator routes into the rightmost leaf, which has
 		// spare capacity after this insert count. This isolates fence-key
 		// routing from underflow/rebalancing behavior.
-		key, err := root.GetKey(root.GetNumKeys() - 1)
+		key, err := root.GetKey(mustGetNumKeys(t, root) - 1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -983,8 +1034,8 @@ func TestDeleteRebalancesCollapsesAndReusesPages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetRootPage after deletes: %v", err)
 	}
-	if root.NodeType() != LeafNode || root.GetNumKeys() != 0 {
-		t.Fatalf("root after deleting all keys = type %v with %d keys, want empty leaf", root.NodeType(), root.GetNumKeys())
+	if root.NodeType() != LeafNode || mustGetNumKeys(t, root) != 0 {
+		t.Fatalf("root after deleting all keys = type %v with %d keys, want empty leaf", root.NodeType(), mustGetNumKeys(t, root))
 	}
 	if err := idx.Validate(); err != nil {
 		t.Fatalf("Validate empty tree: %v", err)
@@ -1209,7 +1260,7 @@ func TestInvariantsAfterInsert(t *testing.T) {
 				t.Fatalf("page %d expected leaf", leafID)
 			}
 			// Check key order within leaf
-			n := leaf.GetNumKeys()
+			n := mustGetNumKeys(t, leaf)
 			if n > (PAGE_SIZE-LeafHeaderSize)/LeafEntrySize {
 				t.Errorf("leaf %d overflow: %d keys", leafID, n)
 			}
@@ -1238,7 +1289,7 @@ func TestInvariantsAfterInsert(t *testing.T) {
 				continue // pages might be free; if you have free‑list, adjust
 			}
 			if page.NodeType() == InternalNode {
-				numKeys := page.GetNumKeys()
+				numKeys := mustGetNumKeys(t, page)
 				for i := 0; i <= int(numKeys); i++ {
 					childID, err := page.GetChild(uint32(i))
 					if err != nil {
