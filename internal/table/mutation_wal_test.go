@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/mugiwara999/goDB/internal/btree"
@@ -239,5 +240,50 @@ func TestRangeMutationsFallBackToTableScan(t *testing.T) {
 	}
 	if err := tbl.ValidateIndexes(); err != nil {
 		t.Fatalf("ValidateIndexes after scan mutations: %v", err)
+	}
+}
+
+func TestRangeMutationCandidateLimitFallsBackToScan(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "data")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DATA_DIR", dataDir)
+	tbl, err := CreateWithTypes("range_candidate_limit", []Column{
+		{Name: "age", Type: ColumnUint64},
+		{Name: "name", Type: ColumnText},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tbl.Close()
+	for i := 0; i <= maxRangeMutationIndexCandidates; i++ {
+		if err := tbl.Insert([]string{strconv.Itoa(i), "old"}); err != nil {
+			t.Fatalf("Insert(%d): %v", i, err)
+		}
+	}
+	if err := tbl.CreateIndex("age"); err != nil {
+		t.Fatal(err)
+	}
+	lower, upper := uint64(0), uint64(maxRangeMutationIndexCandidates)
+	selectedRange := Uint64Range{ColIdx: 1, Lower: &lower, LowerInclusive: true, Upper: &upper, UpperInclusive: true}
+	candidates, indexed, err := tbl.rangeMutationCandidates(selectedRange, nil, "test")
+	if err != nil || indexed || len(candidates) != 0 {
+		t.Fatalf("rangeMutationCandidates = (%d candidates, indexed=%t, err=%v); want scan fallback", len(candidates), indexed, err)
+	}
+	if err := tbl.UpdateRange(selectedRange, nil, []UpdateValue{{ColIdx: 2, Value: "new"}}); err != nil {
+		t.Fatalf("UpdateRange through scan fallback: %v", err)
+	}
+	rows, err := tbl.SelectRange([]string{"name"}, selectedRange, nil)
+	if err != nil || len(rows) != maxRangeMutationIndexCandidates+2 {
+		t.Fatalf("SelectRange returned %d rows, err=%v; want header and %d updates", len(rows), err, maxRangeMutationIndexCandidates+1)
+	}
+	for i, row := range rows[1:] {
+		if row[0] != "new" {
+			t.Fatalf("row %d has name %q, want new", i, row[0])
+		}
+	}
+	if err := tbl.ValidateIndexes(); err != nil {
+		t.Fatalf("ValidateIndexes after scan fallback: %v", err)
 	}
 }

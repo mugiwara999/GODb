@@ -64,6 +64,8 @@ type rangeMutationCandidate struct {
 	row  []string
 }
 
+const maxRangeMutationIndexCandidates = 128
+
 // rangeMutationCandidates reads all matching rows from a ranged-column index
 // before the caller changes any table or index pages. The returned bool is
 // false when the ranged column has no index, so callers can retain the scan
@@ -87,6 +89,11 @@ func (t *Table) rangeMutationCandidates(selectedRange Uint64Range, filters []Col
 		}
 		if !ok {
 			break
+		}
+		if len(entry.RIDs) > maxRangeMutationIndexCandidates-len(seen) {
+			// Avoid retaining a large candidate set alongside the pending
+			// mutation; the caller can process this range with the table scan.
+			return nil, false, nil
 		}
 		for _, rid := range entry.RIDs {
 			pageID, slotID := rid.GetPageID(), rid.GetSlotID()

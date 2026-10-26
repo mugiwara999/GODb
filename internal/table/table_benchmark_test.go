@@ -203,7 +203,7 @@ func BenchmarkTableSelectMultipleIndexes(b *testing.B) {
 }
 
 func BenchmarkTableRangeUpdate(b *testing.B) {
-	for _, size := range []string{"narrow", "broad"} {
+	for _, size := range []string{"narrow", "medium", "broad"} {
 		for _, indexed := range []bool{false, true} {
 			variant := "scan"
 			if indexed {
@@ -214,6 +214,8 @@ func BenchmarkTableRangeUpdate(b *testing.B) {
 				lower, upper := uint64(0), uint64(2047)
 				if size == "narrow" {
 					lower, upper = 1024, 1027
+				} else if size == "medium" {
+					lower, upper = 1024, 1151
 				}
 				selectedRange := table.Uint64Range{ColIdx: 1, Lower: &lower, LowerInclusive: true, Upper: &upper, UpperInclusive: true}
 				updates := []table.UpdateValue{{ColIdx: 2, Value: "changed"}}
