@@ -180,9 +180,9 @@
 - Assessment: secondary indexes are premature with the current model. Columns have no types and every value is an arbitrary string; the B+ tree accepts only unique `uint64` keys and stores one RID per key, so repeated string or numeric values cannot be indexed correctly. Typed columns and a duplicate-key or key-to-RID-list design need to precede a secondary-index feature.
 - Changes: added strict table-row decoding that requires a final field terminator and exactly the declared number of columns. SELECT (including primary-key lookup), DELETE, UPDATE, and primary-index consistency validation now share this check.
 - Regression coverage: malformed persisted payloads with unterminated trailing bytes and with extra terminated fields are rejected by table scans, indexed SELECT, DELETE, UPDATE, and `ValidatePrimaryIndex`.
-- Verification: targeted `GOCACHE=/tmp/goDB-gocache go test ./internal/table` and full `GOCACHE=/tmp/goDB-gocache go test ./...`, `GOCACHE=/tmp/goDB-gocache go build ./...`, `GOCACHE=/tmp/goDB-gocache go vet ./...`, and `git diff --check` passed.
+- Verification: targeted `GOCACHE=/tmp/goDB-gocache go test ./internal/table` and full `GOCACHE=/tmp/goDB-gocache go test ./...`, `GOCACHE=/tmp/goDB-gocache go build ./...`, `GOCACHE=/tmp/goDB-gocache go vet ./...`, and `git diff --check`, `GOCACHE=/tmp/goDB-gocache go test -race ./internal/table`, and `GOOS=windows GOARCH=amd64 GOCACHE=/tmp/goDB-gocache go build ./...` passed.
 - Limitations: `DeserializeRow` remains a permissive low-level helper for compatibility; table operations use the strict schema-aware decoder.
-- Commit: pending.
+- Commit: `ffe0b44` (`Reject malformed serialized table rows`).
 
 ## Prioritized backlog
 
