@@ -9,6 +9,7 @@ import (
 
 	"github.com/mugiwara999/goDB/internal/btree"
 	"github.com/mugiwara999/goDB/internal/filelock"
+	"github.com/mugiwara999/goDB/internal/pager"
 )
 
 func TestCreateRefusesToOverwriteExistingTable(t *testing.T) {
@@ -136,6 +137,56 @@ func TestCreateAndOpenCanonicalizeIdentifiers(t *testing.T) {
 	}
 	if len(rows) != 2 || rows[1][0] != "Ada" {
 		t.Fatalf("Select rows = %q, want header and Ada", rows)
+	}
+}
+
+func TestOpenValidatesAndNormalizesStoredColumns(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		storedColumn  string
+		wantOpenError bool
+	}{
+		{name: "legacy mixed case", storedColumn: "Name"},
+		{name: "duplicate generated id", storedColumn: "id", wantOpenError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dataDir := filepath.Join(t.TempDir(), "data")
+			if err := os.MkdirAll(dataDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("DATA_DIR", dataDir)
+			tbl, err := Create("stored_schema", []string{"name"})
+			if err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+			page, err := tbl.Pager.GetPage(0)
+			if err != nil {
+				t.Fatalf("GetPage metadata: %v", err)
+			}
+			const secondColumnOffset = pager.ColNamesOffset + len("id") + 1
+			copy(page.Data[secondColumnOffset:], []byte(tc.storedColumn+"\x00"))
+			if err := tbl.Pager.Flush(page); err != nil {
+				t.Fatalf("Flush metadata: %v", err)
+			}
+			if err := tbl.Close(); err != nil {
+				t.Fatalf("Close: %v", err)
+			}
+
+			reopened, err := Open("stored_schema")
+			if tc.wantOpenError {
+				if !errors.Is(err, pager.ErrMetadataCorrupt) {
+					t.Fatalf("Open error = %v, want ErrMetadataCorrupt", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Open legacy mixed-case metadata: %v", err)
+			}
+			defer reopened.Close()
+			if got := reopened.GetColumns(); len(got) != 2 || got[1] != "name" {
+				t.Fatalf("GetColumns() = %q, want canonical [id name]", got)
+			}
+		})
 	}
 }
 

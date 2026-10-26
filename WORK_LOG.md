@@ -196,10 +196,10 @@
 ### Validate and canonicalize table schemas
 
 - Priority: schema correctness and safe storage paths. The storage API accepted duplicate names, the generated `id` name as a user column, SQL keywords, malformed identifiers, and embedded NULs. Duplicate names made column lookup inconsistent, while invalid table names could produce paths the SQL interface could not address.
-- Changes: `Create` and `Open` now accept only identifier tokens supported by the SQL lexer and normalize them to lowercase. Creation rejects duplicate columns (case-insensitively) and reserves `id` for the generated primary key before acquiring locks or creating files. README documents these constraints.
-- Regression coverage: invalid schemas including duplicate names, `id`, reserved words, whitespace, and NUL are rejected without leaving files; invalid/path-traversal table names are rejected by Create and Open; mixed-case table/column creation persists canonical lowercase metadata and reopens through a different table-name case.
+- Changes: `Create` and `Open` now accept only identifier tokens supported by the SQL lexer and normalize them to lowercase. Creation rejects duplicate columns (case-insensitively) and reserves `id` for the generated primary key before acquiring locks or creating files. `Open` validates stored schema metadata, normalizes legacy mixed-case columns in memory, and rejects duplicate or invalid persisted columns. README documents these constraints.
+- Regression coverage: invalid schemas including duplicate names, `id`, reserved words, whitespace, and NUL are rejected without leaving files; invalid/path-traversal table names are rejected by Create and Open; mixed-case table/column creation persists canonical lowercase metadata and reopens through a different table-name case; on-disk mixed-case metadata is normalized and duplicate primary-key metadata is rejected as corrupt.
 - Verification: targeted `GOCACHE=/tmp/goDB-gocache go test ./internal/table ./cmd`, full `GOCACHE=/tmp/goDB-gocache go test ./...`, `GOCACHE=/tmp/goDB-gocache go build ./...`, `GOCACHE=/tmp/goDB-gocache go vet ./...`, `GOCACHE=/tmp/goDB-gocache go test -race ./internal/table`, Windows and Solaris cross-builds, and `git diff --check` passed.
-- Limitations: validation is at the table API boundary; existing on-disk schemas created by older direct API calls with noncanonical names are not migrated.
+- Limitations: legacy mixed-case metadata is normalized only in memory; older tables containing duplicate, reserved, or otherwise unaddressable columns are rejected and require manual repair.
 - Commit: pending.
 
 ## Prioritized backlog

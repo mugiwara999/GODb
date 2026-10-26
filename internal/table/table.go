@@ -71,6 +71,11 @@ func openTable(name, path string) (*Table, error) {
 		_ = pg.Close()
 		return nil, fmt.Errorf("open table %q at %q: %w", name, path, err)
 	}
+	cols, err = normalizeStoredColumns(name, cols)
+	if err != nil {
+		_ = pg.Close()
+		return nil, fmt.Errorf("open table %q at %q: %w", name, path, err)
+	}
 
 	idxs := make(map[string]*btree.Index)
 
@@ -253,6 +258,31 @@ func canonicalIdentifier(name, kind string) (string, error) {
 		return "", fmt.Errorf("invalid %s name %q", kind, name)
 	}
 	return canonical, nil
+}
+
+func normalizeStoredColumns(tableName string, cols []string) ([]string, error) {
+	if len(cols) == 0 {
+		return nil, fmt.Errorf("%w: table %q has no columns", pager.ErrMetadataCorrupt, tableName)
+	}
+	primary, err := canonicalIdentifier(cols[0], "column")
+	if err != nil || primary != "id" {
+		return nil, fmt.Errorf("%w: table %q must begin with the generated id column", pager.ErrMetadataCorrupt, tableName)
+	}
+	normalized := make([]string, len(cols))
+	normalized[0] = "id"
+	seen := map[string]struct{}{"id": {}}
+	for i, col := range cols[1:] {
+		canonical, err := canonicalIdentifier(col, "column")
+		if err != nil {
+			return nil, fmt.Errorf("%w: table %q has invalid column %q", pager.ErrMetadataCorrupt, tableName, col)
+		}
+		if _, exists := seen[canonical]; exists {
+			return nil, fmt.Errorf("%w: table %q has duplicate column %q", pager.ErrMetadataCorrupt, tableName, canonical)
+		}
+		seen[canonical] = struct{}{}
+		normalized[i+1] = canonical
+	}
+	return normalized, nil
 }
 
 // createTableFiles assumes the caller holds the table lock and has checked
