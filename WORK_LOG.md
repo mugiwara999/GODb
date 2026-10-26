@@ -573,9 +573,9 @@
 
 - Finding: `readLog` parses untrusted on-disk framing, lengths, checksums, record ordering, and page dimensions before recovery can touch data files. Existing recovery tests covered selected corrupt cases but not arbitrary serialized record sequences.
 - Changes: added `FuzzReadLogDoesNotPanic`, which writes bounded (64 KiB) arbitrary inputs to an isolated temporary journal and invokes only the read-only parser. Seeds cover a valid file-start/page-before sequence, torn checksum, bad checksum, over-limit record length, unknown record type, and records after commit. Added a boundary test accepting a maximum-size record and rejecting a record one byte larger.
-- Verification: resumed baseline full tests/build/vet passed before edits. WAL tests passed; the seeded 10-second fuzz run completed 129,905 executions with 13 additional coverage-interesting inputs and no panic. Final full tests/build/vet, WAL race test, Windows/Solaris WAL test-binary cross-target checks, and `git diff --check` passed. Hosted CI for the previous `94d1774` checkpoint passed on Ubuntu and Windows; CI for this change will run after push.
+- Verification: resumed baseline full tests/build/vet passed before edits. WAL tests passed; the seeded 10-second fuzz run completed 129,905 executions with 13 additional coverage-interesting inputs and no panic. Final full tests/build/vet, WAL race test, Windows/Solaris WAL test-binary cross-target checks, and `git diff --check` passed. Hosted run `40279132863` passed tests, build, and vet on Ubuntu and Windows.
 - Limitations: the fuzzer intentionally does not call `Recover`, which mutates target files; recovery safety remains covered by isolated table-driven tests. Native Solaris runtime testing is still unavailable.
-- Commit: pending.
+- Commit: `b1d9bc7` (`Fuzz WAL journal parsing`).
 
 ## Prioritized backlog
 
@@ -585,4 +585,4 @@
 
 ## Next action
 
-Next action: commit and push the WAL parser fuzzer, confirm hosted Ubuntu/Windows CI, and then reassess the durable read-epoch design. Count setters are committed at `c4c5612`; leaf/posting links at `dca4a37`; parent pointers at `35a6a0c`; checked key-count reads at `b1ea467`; page accessor fuzzing at `7dcf560`; cross-page validation fuzzing at `e605cf5`. Hosted runs `40278741815` and `40278761020` passed on Ubuntu and Windows for `e605cf5` and `94d1774`, respectively. Preserve the supplied untracked `AGENTS.md`. Separately continue seeking a usable Solaris/illumos runtime; Windows native storage tests pass in hosted CI.
+Next action: assess the durable read-epoch design against the current table/file-lock and refresh paths before attempting shared reads. Count setters are committed at `c4c5612`; leaf/posting links at `dca4a37`; parent pointers at `35a6a0c`; checked key-count reads at `b1ea467`; page accessor fuzzing at `7dcf560`; cross-page validation fuzzing at `e605cf5`; WAL parsing fuzzing at `b1d9bc7`. Hosted runs `40278741815`, `40278761020`, and `40279132863` passed on Ubuntu and Windows. Preserve the supplied untracked `AGENTS.md`. Separately continue seeking a usable Solaris/illumos runtime; Windows native storage tests pass in hosted CI.
