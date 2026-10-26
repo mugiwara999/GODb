@@ -200,3 +200,58 @@ func TestRecoverRejectsJournalTargetsOutsideItsDirectory(t *testing.T) {
 		t.Fatalf("rejected journal was removed: %v", err)
 	}
 }
+
+func TestRecoverTreatsTornCommitRecordAsUncommitted(t *testing.T) {
+	dir := t.TempDir()
+	dataPath := filepath.Join(dir, "table.db")
+	journalPath := filepath.Join(dir, "table.db.wal")
+	original := bytes.Repeat([]byte{0x18}, 4096)
+	if err := os.WriteFile(dataPath, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dataFile, err := os.OpenFile(dataPath, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	j, err := Begin(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := j.BeforePageWrite(dataPath, dataFile, 0, 4096); err != nil {
+		t.Fatal(err)
+	}
+	changed := bytes.Repeat([]byte{0x29}, 4096)
+	if _, err := dataFile.WriteAt(changed, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := dataFile.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if err := j.appendRecord(recordCommit, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := j.CloseUncommitted(); err != nil {
+		t.Fatal(err)
+	}
+	if err := dataFile.Close(); err != nil {
+		t.Fatal(err)
+	}
+	logData, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(journalPath, logData[:len(logData)-1], 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Recover(journalPath); err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	got, err := os.ReadFile(dataPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, original) {
+		t.Fatal("torn commit record was treated as committed")
+	}
+}
