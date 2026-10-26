@@ -460,7 +460,7 @@
 - Regression coverage: verifies an opened index file can be removed while its handle remains open, and that the handle then closes cleanly. Existing table tests cover dropping an index with an older handle and reopening after missing-index conditions.
 - Verification: full local tests, build, vet, and diff check passed; race tests for openfile/B+ tree/table passed; Windows and Solaris builds passed; Windows test binaries for openfile and B+ tree cross-compiled. The hosted Windows run identified the issue but has not yet been rerun with this fix.
 - Limitations: Windows directory-entry power-loss durability remains best-effort where parent-directory flushing is rejected. Native Windows confirmation of the deletion fix is pending the next CI run.
-- Commit: to be recorded after commit.
+- Commit: `828a0c0` (`Allow Windows index handles to be deleted`).
 
 ## Prioritized backlog
 
