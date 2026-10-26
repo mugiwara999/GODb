@@ -3,6 +3,7 @@ package pager
 import (
 	"encoding/binary"
 	"fmt"
+	"github.com/mugiwara999/goDB/internal/wal"
 	"os"
 )
 
@@ -10,6 +11,7 @@ type Pager struct {
 	file     *os.File
 	path     string
 	numPages int
+	journal  *wal.Journal
 }
 
 // page 0 for meta data
@@ -96,6 +98,11 @@ func (p *Pager) NewPage() (*Page, error) {
 		Data: data,
 	}
 	page.Init()
+	if p.journal != nil {
+		if err := p.journal.BeforePageWrite(p.path, p.file, uint32(page.ID), PAGE_SIZE); err != nil {
+			return nil, fmt.Errorf("journal page allocation %d in %q: %w", page.ID, p.path, err)
+		}
+	}
 	if err := WritePage(p.file, page); err != nil {
 		return nil, fmt.Errorf("allocate page %d in %q: %w", page.ID, p.path, err)
 	}
@@ -108,12 +115,22 @@ func (p *Pager) Flush(page *Page) error {
 	if page == nil {
 		return fmt.Errorf("flush page in %q: %w", p.path, ErrInvalidPageID)
 	}
+	if p.journal != nil {
+		if page.ID < 0 {
+			return fmt.Errorf("flush page %d to %q: %w", page.ID, p.path, ErrInvalidPageID)
+		}
+		if err := p.journal.BeforePageWrite(p.path, p.file, uint32(page.ID), PAGE_SIZE); err != nil {
+			return fmt.Errorf("journal page %d in %q: %w", page.ID, p.path, err)
+		}
+	}
 	if err := WritePage(p.file, page); err != nil {
 		return fmt.Errorf("flush page %d to %q: %w", page.ID, p.path, err)
 	}
 	return nil
 
 }
+
+func (p *Pager) SetJournal(j *wal.Journal) { p.journal = j }
 
 func (p *Pager) GetColumns() ([]string, error) {
 	if p.numPages == 0 {

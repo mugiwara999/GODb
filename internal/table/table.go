@@ -5,19 +5,23 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/joho/godotenv"
 	"github.com/mugiwara999/goDB/internal/btree"
 	"github.com/mugiwara999/goDB/internal/pager"
+	"github.com/mugiwara999/goDB/internal/wal"
 )
 
 type Table struct {
-	Pager   *pager.Pager
-	Name    string
-	Path    string
-	cols    []string
-	Indexes map[string]*btree.Index
-	lastID  uint64
+	Pager      *pager.Pager
+	Name       string
+	Path       string
+	cols       []string
+	Indexes    map[string]*btree.Index
+	lastID     uint64
+	mutationMu sync.Mutex
+	poisoned   bool
 }
 
 var (
@@ -28,6 +32,9 @@ func Open(name string) (*Table, error) {
 	path, err := tablePath(name)
 	if err != nil {
 		return nil, fmt.Errorf("open table %q: %w", name, err)
+	}
+	if err := wal.Recover(path + ".wal"); err != nil {
+		return nil, fmt.Errorf("recover table %q: %w", name, err)
 	}
 
 	pg, err := pager.OpenPager(path)
@@ -73,6 +80,74 @@ func Open(name string) (*Table, error) {
 		Indexes: idxs,
 		lastID:  lastID,
 	}, nil
+}
+
+func (t *Table) mutate(fn func() error) error {
+	t.mutationMu.Lock()
+	defer t.mutationMu.Unlock()
+	if t.poisoned {
+		return fmt.Errorf("mutate table %q: table must be reopened after a failed rollback", t.Name)
+	}
+	if err := wal.Recover(t.Path + ".wal"); err != nil {
+		return fmt.Errorf("recover table %q before mutation: %w", t.Name, err)
+	}
+
+	j, err := wal.Begin(t.Path + ".wal")
+	if err != nil {
+		return fmt.Errorf("begin table %q mutation: %w", t.Name, err)
+	}
+	t.Pager.SetJournal(j)
+	for _, idx := range t.Indexes {
+		idx.SetJournal(j)
+	}
+	detach := func() {
+		t.Pager.SetJournal(nil)
+		for _, idx := range t.Indexes {
+			idx.SetJournal(nil)
+		}
+	}
+	if err := fn(); err != nil {
+		rbErr := j.Rollback()
+		detach()
+		if rbErr != nil {
+			t.poisoned = true
+			return errors.Join(fmt.Errorf("mutate table %q: %w", t.Name, err), fmt.Errorf("rollback table %q: %w", t.Name, rbErr))
+		}
+		if reopenErr := t.reopenAfterRollback(); reopenErr != nil {
+			t.poisoned = true
+			return errors.Join(fmt.Errorf("mutate table %q: %w", t.Name, err), fmt.Errorf("reopen table %q after rollback: %w", t.Name, reopenErr))
+		}
+		return fmt.Errorf("mutate table %q: %w", t.Name, err)
+	}
+	if err := j.Commit(); err != nil {
+		rbErr := j.Rollback()
+		detach()
+		if rbErr == nil {
+			rbErr = t.reopenAfterRollback()
+		}
+		if rbErr != nil {
+			t.poisoned = true
+			return errors.Join(fmt.Errorf("commit table %q mutation: %w", t.Name, err), fmt.Errorf("restore table %q after failed commit: %w", t.Name, rbErr))
+		}
+		return fmt.Errorf("commit table %q mutation: %w", t.Name, err)
+	}
+	detach()
+	return nil
+}
+
+func (t *Table) reopenAfterRollback() error {
+	for _, idx := range t.Indexes {
+		_ = idx.Close()
+	}
+	if err := t.Pager.Close(); err != nil {
+		return err
+	}
+	reopened, err := Open(t.Name)
+	if err != nil {
+		return err
+	}
+	t.Pager, t.cols, t.Indexes, t.lastID = reopened.Pager, reopened.cols, reopened.Indexes, reopened.lastID
+	return nil
 }
 
 func Create(name string, cols []string) (*Table, error) {

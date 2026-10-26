@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mugiwara999/goDB/internal/btree"
 	"github.com/mugiwara999/goDB/internal/table"
+	"github.com/mugiwara999/goDB/internal/wal"
 )
 
 func setupTableTest(t *testing.T) string {
@@ -162,7 +162,7 @@ func TestRejectedInsertDoesNotConsumeIDOrAllocatePage(t *testing.T) {
 	}
 }
 
-func TestIndexInsertFailureRollsBackLiveRowAndKeepsIDsMonotonic(t *testing.T) {
+func TestIndexInsertFailureRollsBackLiveRowAndIDReservation(t *testing.T) {
 	setupTableTest(t)
 
 	tbl, err := table.Create("rollback_insert", []string{"name"})
@@ -188,24 +188,93 @@ func TestIndexInsertFailureRollsBackLiveRowAndKeepsIDsMonotonic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LastID after failed index insert: %v", err)
 	}
-	if lastID != 1 {
-		t.Fatalf("LastID after failed index insert = %d, want reserved ID count 1", lastID)
+	if lastID != 0 {
+		t.Fatalf("LastID after failed index insert = %d, want rollback to 0", lastID)
 	}
 
-	index, err := btree.OpenIndex("rollback_insert", "id")
-	if err != nil {
-		t.Fatalf("reopen primary index: %v", err)
-	}
-	tbl.Indexes["id"] = index
 	if err := tbl.Insert([]string{"valid"}); err != nil {
-		t.Fatalf("Insert after reopening index: %v", err)
+		t.Fatalf("Insert after failed transaction: %v", err)
 	}
 	rows, err = tbl.Select([]string{"*"}, nil)
 	if err != nil {
 		t.Fatalf("Select after valid insert: %v", err)
 	}
-	if len(rows) != 2 || rows[1][0] != "1" || rows[1][1] != "valid" {
-		t.Fatalf("Select after valid insert = %q, want row [1 valid]", rows)
+	if len(rows) != 2 || rows[1][0] != "0" || rows[1][1] != "valid" {
+		t.Fatalf("Select after valid insert = %q, want row [0 valid]", rows)
+	}
+}
+
+func TestOpenRecoversUncommittedTableAndIndexChanges(t *testing.T) {
+	setupTableTest(t)
+	tbl, err := table.Create("wal_recovery", []string{"name"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	dataPath := tbl.Path
+	journal, err := wal.Begin(dataPath + ".wal")
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	tbl.Pager.SetJournal(journal)
+	tbl.Indexes["id"].SetJournal(journal)
+	if err := tbl.Pager.SetLastID(41); err != nil {
+		t.Fatalf("set uncommitted last ID: %v", err)
+	}
+	if err := tbl.Indexes["id"].Insert(41, 1, 0); err != nil {
+		t.Fatalf("insert uncommitted index key: %v", err)
+	}
+	if err := journal.CloseUncommitted(); err != nil {
+		t.Fatalf("simulate crash: %v", err)
+	}
+	if err := tbl.Close(); err != nil {
+		t.Fatalf("close stale handles: %v", err)
+	}
+
+	reopened, err := table.Open("wal_recovery")
+	if err != nil {
+		t.Fatalf("Open after crash: %v", err)
+	}
+	defer reopened.Close()
+	lastID, err := reopened.Pager.LastID()
+	if err != nil {
+		t.Fatalf("LastID after recovery: %v", err)
+	}
+	if lastID != 0 {
+		t.Fatalf("LastID after recovery = %d, want 0", lastID)
+	}
+	if _, err := reopened.Indexes["id"].Find(41); err == nil {
+		t.Fatal("uncommitted index key survived recovery")
+	}
+	if err := reopened.ValidatePrimaryIndex(); err != nil {
+		t.Fatalf("ValidatePrimaryIndex after recovery: %v", err)
+	}
+}
+
+func TestDeleteIndexFailureRollsBackTableTombstone(t *testing.T) {
+	setupTableTest(t)
+	tbl, err := table.Create("rollback_delete", []string{"name"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	t.Cleanup(func() { _ = tbl.Close() })
+	if err := tbl.Insert([]string{"kept"}); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := tbl.Indexes["id"].Close(); err != nil {
+		t.Fatalf("close primary index: %v", err)
+	}
+	if err := tbl.Delete([]table.ColEq{{ColIdx: 1, Value: "kept"}}); err == nil {
+		t.Fatal("Delete succeeded with closed primary index")
+	}
+	rows, err := tbl.Select([]string{"*"}, nil)
+	if err != nil {
+		t.Fatalf("Select after failed Delete: %v", err)
+	}
+	if len(rows) != 2 || rows[1][0] != "0" || rows[1][1] != "kept" {
+		t.Fatalf("row after failed Delete = %q, want [0 kept]", rows)
+	}
+	if err := tbl.ValidatePrimaryIndex(); err != nil {
+		t.Fatalf("ValidatePrimaryIndex after rollback: %v", err)
 	}
 }
 

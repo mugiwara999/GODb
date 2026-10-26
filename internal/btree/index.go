@@ -6,10 +6,15 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"path/filepath"
+
+	"github.com/mugiwara999/goDB/internal/wal"
 )
 
 type Index struct {
 	file           *os.File
+	path           string
+	journal        *wal.Journal
 	rootPageID     uint32
 	numPages       uint32
 	freePageID     uint32
@@ -58,7 +63,8 @@ func NewIndex(tableName, colName string) (*Index, error) {
 	if 12+len(name)+4 > PAGE_SIZE {
 		return nil, fmt.Errorf("index name is too long: %d bytes", len(name))
 	}
-	file, err := os.Create(fmt.Sprintf("%s/%s_%s.idx", dir, tableName, colName))
+	path := filepath.Join(dir, fmt.Sprintf("%s_%s.idx", tableName, colName))
+	file, err := os.Create(path)
 
 	if err != nil {
 		return nil, fmt.Errorf("create index file for column %q: %v", colName, err)
@@ -93,6 +99,7 @@ func NewIndex(tableName, colName string) (*Index, error) {
 
 	return &Index{
 		file:           file,
+		path:           path,
 		rootPageID:     1,
 		numPages:       2,
 		freeHeadOffset: 12 + len(name),
@@ -107,7 +114,8 @@ func OpenIndex(tableName, colName string) (*Index, error) {
 		dir = "/home/rahul/Projects/goDB/data"
 	}
 
-	file, err := os.OpenFile(fmt.Sprintf("%s/%s_%s.idx", dir, tableName, colName), os.O_RDWR, 0644)
+	path := filepath.Join(dir, fmt.Sprintf("%s_%s.idx", tableName, colName))
+	file, err := os.OpenFile(path, os.O_RDWR, 0644)
 	if err != nil {
 		return nil, fmt.Errorf("open index file for column %q: %v", colName, err)
 	}
@@ -157,6 +165,7 @@ func OpenIndex(tableName, colName string) (*Index, error) {
 
 	index := &Index{
 		file:           file,
+		path:           path,
 		rootPageID:     rootPageID,
 		numPages:       numPages,
 		freePageID:     freePageID,
@@ -622,10 +631,17 @@ func (ind *Index) WritePage(p *BTreePage) error {
 	if p.ID >= ind.numPages {
 		return fmt.Errorf("page ID %d is out of bounds (numPages=%d)", p.ID, ind.numPages)
 	}
+	if ind.journal != nil {
+		if err := ind.journal.BeforePageWrite(ind.path, ind.file, p.ID, PAGE_SIZE); err != nil {
+			return fmt.Errorf("journal index page %d in %q: %w", p.ID, ind.path, err)
+		}
+	}
 	offset := int64(p.ID) * int64(PAGE_SIZE)
 	_, err := ind.file.WriteAt(p.Data[:], offset)
 	return err
 }
+
+func (ind *Index) SetJournal(j *wal.Journal) { ind.journal = j }
 
 func (ind *Index) GetRootPage() (*BTreePage, error) {
 	return ind.GetPage(ind.rootPageID)

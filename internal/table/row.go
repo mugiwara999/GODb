@@ -45,6 +45,10 @@ func DeserializeRow(data []byte) []string {
 }
 
 func (t *Table) Insert(values []string) error {
+	return t.mutate(func() error { return t.insert(values) })
+}
+
+func (t *Table) insert(values []string) error {
 	if len(values)+1 != len(t.cols) {
 		return fmt.Errorf("insert into table %q: expected %d values, got %d", t.Name, len(t.cols)-1, len(values))
 	}
@@ -270,6 +274,10 @@ func (t *Table) Select(columns []string, colEquals []ColEq) ([][]string, error) 
 }
 
 func (t *Table) Delete(filters []ColEq) error {
+	return t.mutate(func() error { return t.delete(filters) })
+}
+
+func (t *Table) delete(filters []ColEq) error {
 	index := t.Indexes["id"]
 	if index == nil {
 		return fmt.Errorf("delete from table %q: missing primary key index", t.Name)
@@ -347,6 +355,10 @@ func (t *Table) Delete(filters []ColEq) error {
 //	Worth understanding and fixing.
 
 func (t *Table) Update(filters []ColEq, toUpdate []UpdateValue) error {
+	return t.mutate(func() error { return t.update(filters, toUpdate) })
+}
+
+func (t *Table) update(filters []ColEq, toUpdate []UpdateValue) error {
 	for _, filter := range filters {
 		if filter.ColIdx < 0 || filter.ColIdx >= len(t.cols) {
 			return fmt.Errorf("update table %q: filter column index %d is out of range", t.Name, filter.ColIdx)
