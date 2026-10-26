@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/mugiwara999/goDB/internal/btree"
@@ -284,5 +285,58 @@ func TestRangeMutationCandidateLimitFallsBackToScan(t *testing.T) {
 	}
 	if err := tbl.ValidateIndexes(); err != nil {
 		t.Fatalf("ValidateIndexes after scan fallback: %v", err)
+	}
+}
+
+func TestIndexedRangeSelectRejectsDuplicatePostingRID(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "data")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DATA_DIR", dataDir)
+	tbl, err := CreateWithTypes("range_select_duplicate_rid", []Column{
+		{Name: "age", Type: ColumnUint64},
+		{Name: "name", Type: ColumnText},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tbl.Close()
+	for _, row := range [][]string{{"10", "Ada"}, {"10", "Lin"}} {
+		if err := tbl.Insert(row); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tbl.CreateIndex("age"); err != nil {
+		t.Fatal(err)
+	}
+	secondary := tbl.Indexes["age"]
+	_, leaf, err := secondary.FindLeaf(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := leaf.GetRID(0)
+	posting, err := secondary.GetPage(marker.GetPageID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := posting.Data
+	posting.SetPostingRID(1, posting.GetPostingRID(0))
+	if err := secondary.WritePage(posting); err != nil {
+		t.Fatal(err)
+	}
+	point := uint64(10)
+	_, err = tbl.SelectRange([]string{"name"}, Uint64Range{
+		ColIdx: 1, Lower: &point, LowerInclusive: true, Upper: &point, UpperInclusive: true,
+	}, nil)
+	if err == nil || !strings.Contains(err.Error(), "duplicate RID") {
+		t.Fatalf("SelectRange error = %v, want duplicate RID", err)
+	}
+	posting.Data = original
+	if err := tbl.Indexes["age"].WritePage(posting); err != nil {
+		t.Fatalf("restore posting page: %v", err)
+	}
+	if err := tbl.ValidateIndexes(); err != nil {
+		t.Fatalf("ValidateIndexes after restoring posting page: %v", err)
 	}
 }

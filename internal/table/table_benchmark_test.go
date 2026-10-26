@@ -233,6 +233,25 @@ func BenchmarkTableRangeUpdate(b *testing.B) {
 	}
 }
 
+func BenchmarkTableSelectRangeDuplicatePosting(b *testing.B) {
+	const rows, distinctValues = 1024, 1
+	tbl := benchmarkUint64Table(b, "range_select_duplicates", rows, distinctValues, true)
+	selectedRange := table.Uint64Range{ColIdx: 1, Lower: uint64Ptr(0), LowerInclusive: true, Upper: uint64Ptr(0), UpperInclusive: true}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		result, err := tbl.SelectRange([]string{"id"}, selectedRange, nil)
+		if err != nil {
+			b.Fatalf("SelectRange: %v", err)
+		}
+		if len(result) != rows/distinctValues+1 {
+			b.Fatalf("SelectRange returned %d rows, want header and %d matches", len(result), rows/distinctValues)
+		}
+	}
+}
+
+func uint64Ptr(value uint64) *uint64 { return &value }
+
 func benchmarkRangeUpdateTable(b *testing.B, indexed bool) *table.Table {
 	b.Helper()
 	dataDir := filepath.Join(b.TempDir(), "data")

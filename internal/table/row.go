@@ -80,7 +80,7 @@ func (t *Table) rangeMutationCandidates(selectedRange Uint64Range, filters []Col
 		return nil, true, fmt.Errorf("%s table %q range index %q: %w", operation, t.Name, t.cols[selectedRange.ColIdx], err)
 	}
 	pages := make(map[uint32]*pager.Page)
-	seen := make(map[uint64]struct{})
+	visited := 0
 	var candidates []rangeMutationCandidate
 	for {
 		entry, ok, err := iterator.Next()
@@ -90,18 +90,14 @@ func (t *Table) rangeMutationCandidates(selectedRange Uint64Range, filters []Col
 		if !ok {
 			break
 		}
-		if len(seen) >= maxRangeMutationIndexCandidates {
+		if visited >= maxRangeMutationIndexCandidates {
 			// Avoid retaining a large candidate set alongside the pending
 			// mutation; the caller can process this range with the table scan.
 			return nil, false, nil
 		}
+		visited++
 		rid := entry.RID
 		pageID, slotID := rid.GetPageID(), rid.GetSlotID()
-		ridKey := uint64(pageID)<<16 | uint64(slotID)
-		if _, exists := seen[ridKey]; exists {
-			return nil, true, fmt.Errorf("%s table %q range index %q contains duplicate row location (%d,%d)", operation, t.Name, t.cols[selectedRange.ColIdx], pageID, slotID)
-		}
-		seen[ridKey] = struct{}{}
 		page := pages[pageID]
 		if page == nil {
 			page, err = t.Pager.GetPage(int(pageID))
@@ -482,7 +478,7 @@ func (t *Table) selectRangeRows(columns []string, selectedRange Uint64Range, col
 		}
 		return result, nil
 	}
-	iterator, err := index.RangeIterator(selectedRange.Lower, selectedRange.LowerInclusive, selectedRange.Upper, selectedRange.UpperInclusive)
+	iterator, err := index.RangeRIDIterator(selectedRange.Lower, selectedRange.LowerInclusive, selectedRange.Upper, selectedRange.UpperInclusive)
 	if err != nil {
 		return nil, fmt.Errorf("range index %q: %w", t.cols[selectedRange.ColIdx], err)
 	}
@@ -495,31 +491,30 @@ func (t *Table) selectRangeRows(columns []string, selectedRange Uint64Range, col
 		if !ok {
 			break
 		}
-		for _, rid := range entry.RIDs {
-			pageID := rid.GetPageID()
-			page := pages[pageID]
-			if page == nil {
-				page, err = t.Pager.GetPage(int(pageID))
-				if err != nil {
-					return nil, fmt.Errorf("range index %q points to invalid page %d: %w", t.cols[selectedRange.ColIdx], pageID, err)
-				}
-				pages[pageID] = page
-			}
-			data, err := page.GetRow(int(rid.GetSlotID()))
+		rid := entry.RID
+		pageID, slotID := rid.GetPageID(), rid.GetSlotID()
+		page := pages[pageID]
+		if page == nil {
+			page, err = t.Pager.GetPage(int(pageID))
 			if err != nil {
-				return nil, fmt.Errorf("range index %q points to invalid row (%d,%d): %w", t.cols[selectedRange.ColIdx], rid.GetPageID(), rid.GetSlotID(), err)
+				return nil, fmt.Errorf("range index %q points to invalid page %d: %w", t.cols[selectedRange.ColIdx], pageID, err)
 			}
-			row, err := t.decodeRow(data)
-			if err != nil {
-				return nil, fmt.Errorf("range index %q points to corrupt row: %w", t.cols[selectedRange.ColIdx], err)
-			}
-			value, err := strconv.ParseUint(row[selectedRange.ColIdx], 10, 64)
-			if err != nil || value != entry.Key {
-				return nil, fmt.Errorf("range index %q has stale key %d at row value %q", t.cols[selectedRange.ColIdx], entry.Key, row[selectedRange.ColIdx])
-			}
-			if rowMatches(row) {
-				appendRow(row)
-			}
+			pages[pageID] = page
+		}
+		data, err := page.GetRow(int(slotID))
+		if err != nil {
+			return nil, fmt.Errorf("range index %q points to invalid row (%d,%d): %w", t.cols[selectedRange.ColIdx], pageID, slotID, err)
+		}
+		row, err := t.decodeRow(data)
+		if err != nil {
+			return nil, fmt.Errorf("range index %q points to corrupt row: %w", t.cols[selectedRange.ColIdx], err)
+		}
+		value, err := strconv.ParseUint(row[selectedRange.ColIdx], 10, 64)
+		if err != nil || value != entry.Key {
+			return nil, fmt.Errorf("range index %q has stale key %d at row value %q", t.cols[selectedRange.ColIdx], entry.Key, row[selectedRange.ColIdx])
+		}
+		if rowMatches(row) {
+			appendRow(row)
 		}
 	}
 	return result, nil

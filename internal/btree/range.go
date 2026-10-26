@@ -28,9 +28,8 @@ type RangeRIDEntry struct {
 	RID RID
 }
 
-// RangeRIDIterator streams one RID at a time. Posting pages are validated as
-// they are visited; callers that require duplicate-RID detection should track
-// RIDs in the portion they consume.
+// RangeRIDIterator streams one RID at a time. Posting pages and duplicate RIDs
+// within each posting chain are validated as they are consumed.
 type RangeRIDIterator struct {
 	index            *Index
 	leaf             *BTreePage
@@ -49,6 +48,7 @@ type RangeRIDIterator struct {
 	postingCount     int
 	postingCountRead int
 	seenPostings     map[uint32]struct{}
+	seenRIDs         map[RID]struct{}
 }
 
 // RangeIterator starts a streaming scan with optional inclusive or exclusive
@@ -190,6 +190,11 @@ func (it *RangeRIDIterator) Next() (entry RangeRIDEntry, ok bool, err error) {
 					it.done = true
 					return RangeRIDEntry{}, false, fmt.Errorf("posting page %d contains reserved marker RID", it.postingPageID)
 				}
+				if _, exists := it.seenRIDs[rid]; exists {
+					it.done = true
+					return RangeRIDEntry{}, false, fmt.Errorf("posting chain contains duplicate RID (%d,%d)", rid.pageID, rid.slotID)
+				}
+				it.seenRIDs[rid] = struct{}{}
 				it.postingCountRead++
 				return RangeRIDEntry{Key: it.key, RID: rid}, true, nil
 			}
@@ -202,6 +207,7 @@ func (it *RangeRIDIterator) Next() (entry RangeRIDEntry, ok bool, err error) {
 				it.postingPageID = 0
 				it.postingPage = nil
 				it.seenPostings = nil
+				it.seenRIDs = nil
 				it.postingCountRead = 0
 				continue
 			}
@@ -258,6 +264,7 @@ func (it *RangeRIDIterator) Next() (entry RangeRIDEntry, ok bool, err error) {
 		it.postingPage = nil
 		it.postingCountRead = 0
 		it.seenPostings = make(map[uint32]struct{})
+		it.seenRIDs = make(map[RID]struct{})
 	}
 }
 
