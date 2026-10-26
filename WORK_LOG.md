@@ -333,12 +333,21 @@
 - Limitations: candidate counts require traversing each posting chain, so multi-index planning has additional index I/O; the shortest list is selected by RID count, without accounting for row-page locality.
 - Commit: `5b7937b` (`Choose selective index for equality filters`).
 
+### Add streaming UINT64 range selection
+
+- Priority: ordered lookup capability. The B+ tree stored sorted keys and duplicate posting chains, but callers had no supported way to scan a key interval.
+- Changes: added `Index.RangeIterator` to stream distinct keys and their RIDs in key order with optional inclusive/exclusive bounds, unbounded endpoints, posting-chain reads, and leaf-cycle detection. Added `Table.SelectRange`, which uses the index when available and falls back to a scan; additional equality filters work with either path. README documents the API and unspecified row order.
+- Regression coverage: scans across multiple leaf pages, boundary inclusivity, empty point ranges, duplicate postings, unbounded scans, indexed-versus-scan equivalence, empty matches, additional filters, update/delete, and reopen.
+- Verification: targeted range tests repeated 10 times; full tests, build, vet, race tests for table/pager/B+ tree/WAL/CLI, Windows and Solaris cross-builds, and `git diff --check` passed.
+- Limitations: SQL range predicates are not yet implemented; range selection is available through the Go API. The iterator requires callers to exclude concurrent index mutation; `Table.SelectRange` provides that coordination.
+- Commit: pending.
+
 ## Prioritized backlog
 
 1. **Run storage durability tests on Windows and Solaris.** Creation, WAL, table/index lifecycle, and directory sync have runtime verification only on Linux; this host has no Windows/Solaris runtime or guest images. Solaris uses a process-local lock fallback. Dependencies: native or emulated test environments. Risks: directory-sync, rename, unlink, and lock behavior differs; cross-builds and injected Linux failures do not prove power-loss guarantees. Acceptance: run table/index creation and removal, interrupted-create recovery, WAL begin/rollback/recovery, and lock tests on each OS; document unsupported semantics or return clear errors if required primitives fail. Tests needed: native runtime coverage of those paths on Windows and Solaris.
 2. **Design a durable read epoch before shared read locking.** SELECT recovery and refresh currently mutate WAL, pager, and index state under an exclusive lock. A shared-lock change alone is unsafe. Dependencies: define a persisted generation or immutable read-state design and a way for readers to detect pending recovery. Acceptance: concurrent reads overlap while writers/recovery remain excluded, stale handles refresh safely, and readers never observe partially recovered state. Tests/benchmarks needed: process-level readers and writers, race tests, crash-recovery interaction, and before/after parallel query throughput.
-3. **Add range scans for ordered UINT64 indexes.** The B+ tree maintains sorted leaves and duplicate posting lists, but table and SQL filters expose equality only. Dependencies: a range iterator that handles duplicate buckets and deleted/relocated rows, then parser/filter support. Acceptance: inclusive/exclusive lower and upper bounds return exact rows across leaf splits, posting chains, reopen, update, and delete. Tests/benchmarks needed: boundary keys, duplicate boundary values, empty ranges, scan equivalence, and range selectivity.
+3. **Expose range predicates in SQL.** The B+ tree iterator and `Table.SelectRange` support typed range lookup, but the command language exposes equality only. Dependencies: lexer tokens, parser representation for inclusive/exclusive bounds, and command dispatch. Acceptance: unsigned numeric range filters produce the same exact rows as the Go API and correctly handle empty and unbounded endpoints. Tests needed: parser malformed/range cases and CLI indexed-versus-scan behavior after mutations and reopen.
 
 ## Next action
 
-Next task: design a UINT64 range-iterator API over leaf links and posting lists, then consider SQL range predicates. Continue seeking a Windows/Solaris runtime for durability tests and retain the shared-read epoch design in backlog. Preserve the supplied untracked `AGENTS.md`.
+Next task: extend the lexer/parser and command loop with UINT64 range predicates backed by `Table.SelectRange`. Continue seeking a Windows/Solaris runtime for durability tests and retain the shared-read epoch design in backlog. Preserve the supplied untracked `AGENTS.md`.

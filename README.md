@@ -267,6 +267,8 @@ This validator is heavily used while developing the storage engine.
 
 `Table.ValidatePrimaryIndex` checks the generated ID index. `Table.ValidateIndexes` additionally checks every open secondary index against the live rows. The Go API supports `Table.CreateIndex("name")` and `Table.DropIndex("name")` for `TEXT` and `UINT64` columns. Create backfills existing rows, equality filters use the index, and drop clears the catalog before removing the file. TEXT keys use a stable SHA-256-derived bucket; SELECT compares the stored text exactly, so hash collisions can add lookup work but cannot return a false match. SQL exposes these operations as `CREATE INDEX ON users(name)` and `DROP INDEX ON users(name)`. Indexes are named by their table and column in storage, so this syntax does not take a user-defined index name.
 
+The Go API also provides `Table.SelectRange` for inclusive or exclusive bounds on a `UINT64` column. It uses the column's secondary index when available and scans the table otherwise. Result order is unspecified and can differ depending on whether an index is present.
+
 ## SQL subset
 
 The command-line program reads one statement per input line. Keywords and identifiers are case-insensitive. String values use single quotes; the current lexer does not support escaping an apostrophe inside a string. Statements do not use a trailing semicolon.

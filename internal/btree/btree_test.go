@@ -609,6 +609,90 @@ func TestDuplicatePostingChainsReopenDeleteAndReusePages(t *testing.T) {
 	}
 }
 
+func TestRangeIteratorBoundsAcrossLeavesAndDuplicatePostings(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("DATA_DIR", dir)
+	index, err := NewIndex("range_iterator", "key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer index.Close()
+	for key := uint64(0); key < 1000; key++ {
+		if err := index.Insert(key, uint32(key+10), 1); err != nil {
+			t.Fatalf("Insert(%d): %v", key, err)
+		}
+	}
+	for n := uint32(0); n < 4; n++ {
+		if err := index.InsertDuplicate(250, 2000+n, uint16(n+1)); err != nil {
+			t.Fatalf("InsertDuplicate(250,%d): %v", n, err)
+		}
+	}
+	lower, upper := uint64(250), uint64(253)
+	it, err := index.RangeIterator(&lower, true, &upper, false)
+	if err != nil {
+		t.Fatalf("RangeIterator: %v", err)
+	}
+	wantKeys := []uint64{250, 251, 252}
+	for _, wantKey := range wantKeys {
+		entry, ok, err := it.Next()
+		if err != nil || !ok {
+			t.Fatalf("Next() = %v, %v; want key %d", ok, err, wantKey)
+		}
+		if entry.Key != wantKey {
+			t.Fatalf("range key = %d, want %d", entry.Key, wantKey)
+		}
+		wantRIDs := 1
+		if wantKey == 250 {
+			wantRIDs = 5
+		}
+		if len(entry.RIDs) != wantRIDs {
+			t.Fatalf("key %d returned %d RIDs, want %d", wantKey, len(entry.RIDs), wantRIDs)
+		}
+	}
+	if _, ok, err := it.Next(); err != nil || ok {
+		t.Fatalf("Next() after upper bound = %v, %v; want end", ok, err)
+	}
+
+	single, err := index.RangeIterator(&lower, true, &lower, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, ok, err := single.Next()
+	if err != nil || !ok || entry.Key != lower {
+		t.Fatalf("inclusive point range = %v, %v, %v", entry, ok, err)
+	}
+	if _, ok, err := single.Next(); err != nil || ok {
+		t.Fatalf("point range second Next = %v, %v; want end", ok, err)
+	}
+
+	empty, err := index.RangeIterator(&lower, false, &lower, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := empty.Next(); err != nil || ok {
+		t.Fatalf("exclusive point range = %v, %v; want empty", ok, err)
+	}
+
+	unbounded, err := index.RangeIterator(nil, false, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for {
+		_, ok, err := unbounded.Next()
+		if err != nil {
+			t.Fatalf("unbounded Next: %v", err)
+		}
+		if !ok {
+			break
+		}
+		count++
+	}
+	if count != 1000 {
+		t.Fatalf("unbounded range returned %d keys, want 1000", count)
+	}
+}
+
 func TestDuplicatePostingMutationRollsBackWithWAL(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("DATA_DIR", dir)

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -577,6 +578,101 @@ func TestSelectWithMultipleIndexesReturnsSameRowsInAnyFilterOrder(t *testing.T) 
 		rows, err := tbl.Select([]string{"account", "code"}, filterOrder)
 		if err != nil || len(rows) != 1 {
 			t.Fatalf("Select missing match with %v = %q, %v; want header only", filterOrder, rows, err)
+		}
+	}
+}
+
+func TestSelectRangeMatchesScanAndTracksIndexedMutations(t *testing.T) {
+	setupTableTest(t)
+	tbl, err := table.CreateWithTypes("range_select", []table.Column{
+		{Name: "age", Type: table.ColumnUint64},
+		{Name: "team", Type: table.ColumnText},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tbl.Close()
+	for i := 0; i <= 20; i++ {
+		team := "red"
+		if i%2 == 0 {
+			team = "blue"
+		}
+		if err := tbl.Insert([]string{strconv.Itoa(i), team}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, row := range [][]string{{"10", "blue"}, {"10", "blue"}, {"11", "blue"}} {
+		if err := tbl.Insert(row); err != nil {
+			t.Fatal(err)
+		}
+	}
+	lo5, hi10 := uint64(5), uint64(10)
+	lo5b, hi6 := uint64(5), uint64(6)
+	hi2 := uint64(2)
+	lo8, hi12 := uint64(8), uint64(12)
+	cases := []struct {
+		name    string
+		rangeBy table.Uint64Range
+		filters []table.ColEq
+	}{
+		{name: "inclusive bounds", rangeBy: table.Uint64Range{ColIdx: 1, Lower: &lo5, LowerInclusive: true, Upper: &hi10, UpperInclusive: true}},
+		{name: "exclusive empty interval", rangeBy: table.Uint64Range{ColIdx: 1, Lower: &lo5b, LowerInclusive: false, Upper: &hi6, UpperInclusive: false}},
+		{name: "unbounded lower", rangeBy: table.Uint64Range{ColIdx: 1, Upper: &hi2, UpperInclusive: true}},
+		{name: "combined equality", rangeBy: table.Uint64Range{ColIdx: 1, Lower: &lo8, LowerInclusive: true, Upper: &hi12, UpperInclusive: true}, filters: []table.ColEq{{ColIdx: 2, Value: "blue"}}},
+	}
+	before := make(map[string][][]string)
+	for _, tc := range cases {
+		rows, err := tbl.SelectRange([]string{"age", "team"}, tc.rangeBy, tc.filters)
+		if err != nil {
+			t.Fatalf("scan %s: %v", tc.name, err)
+		}
+		before[tc.name] = rows
+	}
+	if err := tbl.CreateIndex("age"); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range cases {
+		rows, err := tbl.SelectRange([]string{"age", "team"}, tc.rangeBy, tc.filters)
+		if err != nil {
+			t.Fatalf("indexed %s: %v", tc.name, err)
+		}
+		sortRows := func(rows [][]string) []string {
+			keys := make([]string, len(rows))
+			for i, row := range rows {
+				keys[i] = strings.Join(row, "\x00")
+			}
+			sort.Strings(keys)
+			return keys
+		}
+		if !reflect.DeepEqual(sortRows(rows), sortRows(before[tc.name])) {
+			t.Fatalf("scan and index differ for %s: scan=%q indexed=%q", tc.name, before[tc.name], rows)
+		}
+	}
+	if err := tbl.Update([]table.ColEq{{ColIdx: 1, Value: "10"}, {ColIdx: 2, Value: "blue"}}, []table.UpdateValue{{ColIdx: 1, Value: "12"}}); err != nil {
+		t.Fatalf("Update range key: %v", err)
+	}
+	if err := tbl.Delete([]table.ColEq{{ColIdx: 1, Value: "11"}}); err != nil {
+		t.Fatalf("Delete range key: %v", err)
+	}
+	if err := tbl.ValidateIndexes(); err != nil {
+		t.Fatalf("ValidateIndexes after range mutations: %v", err)
+	}
+	if err := tbl.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := table.Open("range_select")
+	if err != nil {
+		t.Fatalf("Open after range mutations: %v", err)
+	}
+	defer reopened.Close()
+	rows, err := reopened.SelectRange([]string{"age", "team"}, cases[0].rangeBy, nil)
+	if err != nil {
+		t.Fatalf("SelectRange after reopen: %v", err)
+	}
+	for _, row := range rows[1:] {
+		age, _ := strconv.ParseUint(row[0], 10, 64)
+		if age < 5 || age > 10 {
+			t.Fatalf("range after reopen returned out-of-range age %q", row[0])
 		}
 	}
 }

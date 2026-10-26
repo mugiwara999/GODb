@@ -18,6 +18,16 @@ type ColEq struct {
 	Value  string
 }
 
+// Uint64Range describes an inclusive or exclusive range over one UINT64
+// column. A nil bound is unbounded on that side.
+type Uint64Range struct {
+	ColIdx         int
+	Lower          *uint64
+	LowerInclusive bool
+	Upper          *uint64
+	UpperInclusive bool
+}
+
 type UpdateValue struct {
 	ColIdx int
 	Value  string
@@ -257,6 +267,160 @@ func (t *Table) Select(columns []string, colEquals []ColEq) ([][]string, error) 
 		return nil, fmt.Errorf("refresh table %q indexes before select: %w", t.Name, err)
 	}
 	return t.selectRows(columns, colEquals)
+}
+
+// SelectRange selects rows whose UINT64 column falls inside selectedRange,
+// optionally applying additional equality filters. It uses the column index
+// when one is declared and otherwise scans the table.
+func (t *Table) SelectRange(columns []string, selectedRange Uint64Range, colEquals []ColEq) ([][]string, error) {
+	if t == nil || t.Pager == nil {
+		return nil, fmt.Errorf("select range: table is not open")
+	}
+	t.mutationMu.Lock()
+	defer t.mutationMu.Unlock()
+	if t.closed {
+		return nil, fmt.Errorf("select range from table %q: %w", t.Name, ErrTableClosed)
+	}
+	if t.poisoned {
+		return nil, fmt.Errorf("select range from table %q: table must be reopened after a failed rollback", t.Name)
+	}
+	lock, err := filelock.Acquire(t.Path + ".lock")
+	if err != nil {
+		return nil, fmt.Errorf("lock table %q for range select: %w", t.Name, err)
+	}
+	defer lock.Close()
+	if err := wal.Recover(t.Path + ".wal"); err != nil {
+		return nil, fmt.Errorf("recover table %q before range select: %w", t.Name, err)
+	}
+	if err := t.Pager.Refresh(); err != nil {
+		return nil, fmt.Errorf("refresh table %q before range select: %w", t.Name, err)
+	}
+	if err := t.refreshIndexesForRead(); err != nil {
+		return nil, fmt.Errorf("refresh table %q indexes before range select: %w", t.Name, err)
+	}
+	return t.selectRangeRows(columns, selectedRange, colEquals)
+}
+
+func (t *Table) selectRangeRows(columns []string, selectedRange Uint64Range, colEquals []ColEq) ([][]string, error) {
+	if selectedRange.ColIdx < 0 || selectedRange.ColIdx >= len(t.cols) {
+		return nil, fmt.Errorf("select range from table %q: column index %d is out of range", t.Name, selectedRange.ColIdx)
+	}
+	if t.colTypes[selectedRange.ColIdx] != ColumnUint64 {
+		return nil, fmt.Errorf("select range from table %q: column %q is not UINT64", t.Name, t.cols[selectedRange.ColIdx])
+	}
+	if len(columns) > 0 && columns[0] == "*" {
+		columns = t.GetColumns()
+	}
+	if len(columns) == 0 {
+		return nil, fmt.Errorf("select range from table %q: no columns requested", t.Name)
+	}
+	colMap := make(map[string]int, len(t.cols))
+	for i, col := range t.cols {
+		colMap[col] = i
+	}
+	colIdxs := make([]int, 0, len(columns))
+	for _, col := range columns {
+		idx, ok := colMap[col]
+		if !ok {
+			return nil, fmt.Errorf("select range from table %q: column %q does not exist", t.Name, col)
+		}
+		colIdxs = append(colIdxs, idx)
+	}
+	filters, err := t.normalizeFilters(colEquals, "select range from")
+	if err != nil {
+		return nil, err
+	}
+	result := [][]string{columns}
+	appendRow := func(row []string) {
+		projected := make([]string, 0, len(colIdxs))
+		for _, idx := range colIdxs {
+			projected = append(projected, row[idx])
+		}
+		result = append(result, projected)
+	}
+	rowMatches := func(row []string) bool {
+		for _, filter := range filters {
+			if row[filter.ColIdx] != filter.Value {
+				return false
+			}
+		}
+		return true
+	}
+	inRange := func(value uint64) bool {
+		if selectedRange.Lower != nil && (value < *selectedRange.Lower || value == *selectedRange.Lower && !selectedRange.LowerInclusive) {
+			return false
+		}
+		if selectedRange.Upper != nil && (value > *selectedRange.Upper || value == *selectedRange.Upper && !selectedRange.UpperInclusive) {
+			return false
+		}
+		return true
+	}
+	index := t.Indexes[t.cols[selectedRange.ColIdx]]
+	if index == nil {
+		rowIt := t.Pager.RowIterator()
+		for {
+			data, err := rowIt.Next()
+			if err != nil {
+				return nil, fmt.Errorf("scan table %q for range select: %w", t.Name, err)
+			}
+			if data == nil {
+				break
+			}
+			row, err := t.decodeRow(data)
+			if err != nil {
+				return nil, fmt.Errorf("scan table %q for range select: corrupt row: %w", t.Name, err)
+			}
+			value, err := strconv.ParseUint(row[selectedRange.ColIdx], 10, 64)
+			if err != nil {
+				return nil, fmt.Errorf("scan table %q for range select: invalid UINT64 value: %w", t.Name, err)
+			}
+			if inRange(value) && rowMatches(row) {
+				appendRow(row)
+			}
+		}
+		return result, nil
+	}
+	iterator, err := index.RangeIterator(selectedRange.Lower, selectedRange.LowerInclusive, selectedRange.Upper, selectedRange.UpperInclusive)
+	if err != nil {
+		return nil, fmt.Errorf("range index %q: %w", t.cols[selectedRange.ColIdx], err)
+	}
+	pages := make(map[uint32]*pager.Page)
+	for {
+		entry, ok, err := iterator.Next()
+		if err != nil {
+			return nil, fmt.Errorf("read range index %q: %w", t.cols[selectedRange.ColIdx], err)
+		}
+		if !ok {
+			break
+		}
+		for _, rid := range entry.RIDs {
+			pageID := rid.GetPageID()
+			page := pages[pageID]
+			if page == nil {
+				page, err = t.Pager.GetPage(int(pageID))
+				if err != nil {
+					return nil, fmt.Errorf("range index %q points to invalid page %d: %w", t.cols[selectedRange.ColIdx], pageID, err)
+				}
+				pages[pageID] = page
+			}
+			data, err := page.GetRow(int(rid.GetSlotID()))
+			if err != nil {
+				return nil, fmt.Errorf("range index %q points to invalid row (%d,%d): %w", t.cols[selectedRange.ColIdx], rid.GetPageID(), rid.GetSlotID(), err)
+			}
+			row, err := t.decodeRow(data)
+			if err != nil {
+				return nil, fmt.Errorf("range index %q points to corrupt row: %w", t.cols[selectedRange.ColIdx], err)
+			}
+			value, err := strconv.ParseUint(row[selectedRange.ColIdx], 10, 64)
+			if err != nil || value != entry.Key {
+				return nil, fmt.Errorf("range index %q has stale key %d at row value %q", t.cols[selectedRange.ColIdx], entry.Key, row[selectedRange.ColIdx])
+			}
+			if rowMatches(row) {
+				appendRow(row)
+			}
+		}
+	}
+	return result, nil
 }
 
 func (t *Table) selectRows(columns []string, colEquals []ColEq) ([][]string, error) {
