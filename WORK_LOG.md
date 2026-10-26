@@ -191,7 +191,7 @@
 - Regression coverage: fallback lock test verifies a second same-process acquisition blocks until the first lock closes. Linux tests pass; Solaris full build and filelock test binary cross-compile; Windows full build passes.
 - Verification: `GOCACHE=/tmp/goDB-gocache go test ./internal/filelock`, full `GOCACHE=/tmp/goDB-gocache go test ./...`, `GOOS=solaris GOARCH=amd64 GOCACHE=/tmp/goDB-gocache go build ./...`, `GOOS=solaris GOARCH=amd64 GOCACHE=/tmp/goDB-gocache go test -c -o /tmp/goDB-filelock-solaris.test ./internal/filelock`, `GOOS=windows GOARCH=amd64 GOCACHE=/tmp/goDB-gocache go build ./...`, and `git diff --check` passed.
 - Limitations: runtime tests were available only on Linux. Cross-compilation proves the Solaris fallback builds but does not validate directory-sync behavior or crash durability on Solaris or Windows.
-- Commit: pending.
+- Commit: `8983652` (`Restore Solaris build using fallback locks`).
 
 ## Prioritized backlog
 
