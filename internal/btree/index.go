@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -15,6 +16,7 @@ type Index struct {
 	file           *os.File
 	path           string
 	journal        *wal.Journal
+	writeAtFn      func([]byte, int64) (int, error)
 	rootPageID     uint32
 	numPages       uint32
 	freePageID     uint32
@@ -637,8 +639,18 @@ func (ind *Index) WritePage(p *BTreePage) error {
 		}
 	}
 	offset := int64(p.ID) * int64(PAGE_SIZE)
-	_, err := ind.file.WriteAt(p.Data[:], offset)
-	return err
+	writeAt := ind.file.WriteAt
+	if ind.writeAtFn != nil {
+		writeAt = ind.writeAtFn
+	}
+	n, err := writeAt(p.Data[:], offset)
+	if err != nil {
+		return err
+	}
+	if n != PAGE_SIZE {
+		return fmt.Errorf("write index page %d: %w (wrote %d of %d bytes)", p.ID, io.ErrShortWrite, n, PAGE_SIZE)
+	}
+	return nil
 }
 
 func (ind *Index) SetJournal(j *wal.Journal) { ind.journal = j }

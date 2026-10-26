@@ -12,6 +12,7 @@ type Pager struct {
 	path     string
 	numPages int
 	journal  *wal.Journal
+	writeFn  func(*os.File, *Page) error
 }
 
 // page 0 for meta data
@@ -103,7 +104,7 @@ func (p *Pager) NewPage() (*Page, error) {
 			return nil, fmt.Errorf("journal page allocation %d in %q: %w", page.ID, p.path, err)
 		}
 	}
-	if err := WritePage(p.file, page); err != nil {
+	if err := p.writePage(page); err != nil {
 		return nil, fmt.Errorf("allocate page %d in %q: %w", page.ID, p.path, err)
 	}
 
@@ -123,7 +124,7 @@ func (p *Pager) Flush(page *Page) error {
 			return fmt.Errorf("journal page %d in %q: %w", page.ID, p.path, err)
 		}
 	}
-	if err := WritePage(p.file, page); err != nil {
+	if err := p.writePage(page); err != nil {
 		return fmt.Errorf("flush page %d to %q: %w", page.ID, p.path, err)
 	}
 	return nil
@@ -131,6 +132,13 @@ func (p *Pager) Flush(page *Page) error {
 }
 
 func (p *Pager) SetJournal(j *wal.Journal) { p.journal = j }
+
+func (p *Pager) writePage(page *Page) error {
+	if p.writeFn != nil {
+		return p.writeFn(p.file, page)
+	}
+	return WritePage(p.file, page)
+}
 
 func (p *Pager) GetColumns() ([]string, error) {
 	if p.numPages == 0 {
