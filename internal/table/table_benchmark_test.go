@@ -201,3 +201,60 @@ func BenchmarkTableSelectMultipleIndexes(b *testing.B) {
 		})
 	}
 }
+
+func BenchmarkTableRangeUpdate(b *testing.B) {
+	for _, indexed := range []bool{false, true} {
+		variant := "scan"
+		if indexed {
+			variant = "secondary_index"
+		}
+		b.Run(variant, func(b *testing.B) {
+			tbl := benchmarkRangeUpdateTable(b, indexed)
+			selectedRange := table.Uint64Range{Lower: uint64Pointer(1024), LowerInclusive: true, Upper: uint64Pointer(1027), UpperInclusive: true}
+			updates := []table.UpdateValue{{ColIdx: 2, Value: "changed"}}
+			// The key is deliberately left unchanged, so repeated iterations use
+			// the same four matching rows and isolate range-selection work.
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				if err := tbl.UpdateRange(selectedRange, nil, updates); err != nil {
+					b.Fatalf("UpdateRange: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func uint64Pointer(value uint64) *uint64 { return &value }
+
+func benchmarkRangeUpdateTable(b *testing.B, indexed bool) *table.Table {
+	b.Helper()
+	dataDir := filepath.Join(b.TempDir(), "data")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		b.Fatal(err)
+	}
+	b.Setenv("DATA_DIR", dataDir)
+	tbl, err := table.CreateWithTypes("range_update", []table.Column{
+		{Name: "key", Type: table.ColumnUint64},
+		{Name: "payload", Type: table.ColumnText},
+	})
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(func() {
+		if err := tbl.Close(); err != nil {
+			b.Errorf("close benchmark table: %v", err)
+		}
+	})
+	for i := 0; i < 2048; i++ {
+		if err := tbl.Insert([]string{strconv.Itoa(i), "original"}); err != nil {
+			b.Fatalf("seed Insert(%d): %v", i, err)
+		}
+	}
+	if indexed {
+		if err := tbl.CreateIndex("key"); err != nil {
+			b.Fatalf("CreateIndex: %v", err)
+		}
+	}
+	return tbl
+}
