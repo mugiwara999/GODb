@@ -200,7 +200,7 @@
 - Regression coverage: invalid schemas including duplicate names, `id`, reserved words, whitespace, and NUL are rejected without leaving files; invalid/path-traversal table names are rejected by Create and Open; mixed-case table/column creation persists canonical lowercase metadata and reopens through a different table-name case; on-disk mixed-case metadata is normalized and duplicate primary-key metadata is rejected as corrupt.
 - Verification: targeted `GOCACHE=/tmp/goDB-gocache go test ./internal/table ./cmd`, full `GOCACHE=/tmp/goDB-gocache go test ./...`, `GOCACHE=/tmp/goDB-gocache go build ./...`, `GOCACHE=/tmp/goDB-gocache go vet ./...`, `GOCACHE=/tmp/goDB-gocache go test -race ./internal/table`, Windows and Solaris cross-builds, and `git diff --check` passed.
 - Limitations: legacy mixed-case metadata is normalized only in memory; older tables containing duplicate, reserved, or otherwise unaddressable columns are rejected and require manual repair.
-- Commit: pending.
+- Commits: `e21b439` (`Validate SQL table and column identifiers`) and `73ec01f` (persisted-schema validation follow-up).
 
 ## Prioritized backlog
 
