@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -58,5 +59,49 @@ func TestCommandLoopExecutesAndPersistsSQLSubset(t *testing.T) {
 	}
 	if err := tbl.ValidatePrimaryIndex(); err != nil {
 		t.Fatalf("ValidatePrimaryIndex after CLI commands: %v", err)
+	}
+}
+
+func TestCommandLoopCreatesTypedColumnsAndValidatesValues(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "data")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DATA_DIR", dataDir)
+	input := strings.Join([]string{
+		"CREATE TABLE people (age UINT64, name TEXT)",
+		"INSERT INTO people VALUES 00042, 'Ada'",
+		"SELECT age FROM people WHERE age=42",
+		"INSERT INTO people VALUES invalid, 'Grace'",
+		"UPDATE people SET age=43 WHERE name='Ada'",
+		"SELECT age FROM people WHERE age=00043",
+	}, "\n")
+	var output bytes.Buffer
+	run(strings.NewReader(input), &output)
+	got := output.String()
+	for _, expected := range []string{
+		"age\n42\n",
+		"invalid UINT64 value \"invalid\"",
+		"age\n43\n",
+	} {
+		if !strings.Contains(got, expected) {
+			t.Errorf("command output %q does not contain %q", got, expected)
+		}
+	}
+
+	tbl, err := table.Open("people")
+	if err != nil {
+		t.Fatalf("Open typed table: %v", err)
+	}
+	defer tbl.Close()
+	if got, want := tbl.GetColumnTypes(), []table.ColumnType{table.ColumnUint64, table.ColumnUint64, table.ColumnText}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("GetColumnTypes() = %v, want %v", got, want)
+	}
+	rows, err := tbl.Select([]string{"age", "name"}, nil)
+	if err != nil {
+		t.Fatalf("Select persisted rows: %v", err)
+	}
+	if len(rows) != 2 || strings.Join(rows[1], ",") != "43,Ada" {
+		t.Fatalf("persisted rows = %q, want [43 Ada]", rows)
 	}
 }

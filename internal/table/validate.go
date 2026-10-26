@@ -57,7 +57,7 @@ func (t *Table) ValidatePrimaryIndex() error {
 			if err != nil {
 				return fmt.Errorf("validate primary index for table %q: key %d points to invalid row (%d,%d): %w", t.Name, key, location.pageID, location.slotID, err)
 			}
-			row, err := decodeTableRow(data, len(t.cols))
+			row, err := t.decodeRow(data)
 			if err != nil {
 				return fmt.Errorf("validate primary index for table %q: key %d points to corrupt row: %w", t.Name, key, err)
 			}
@@ -86,7 +86,7 @@ func (t *Table) ValidatePrimaryIndex() error {
 		if data == nil {
 			break
 		}
-		row, err := decodeTableRow(data, len(t.cols))
+		row, err := t.decodeRow(data)
 		if err != nil {
 			return fmt.Errorf("validate primary index for table %q: corrupt live row: %w", t.Name, err)
 		}

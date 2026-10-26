@@ -15,12 +15,13 @@ type Pair struct {
 var ErrInvalidSyntax = errors.New("invalid syntax")
 
 type Query struct {
-	Type    string
-	Table   string
-	Columns []string
-	Values  []string
-	Filters []Pair
-	Updates []Pair
+	Type        string
+	Table       string
+	Columns     []string
+	ColumnTypes []string
+	Values      []string
+	Filters     []Pair
+	Updates     []Pair
 }
 
 func syntaxError(op, msg string) error {
@@ -118,6 +119,8 @@ func Parse(input string) (*Query, error) {
 		}
 
 		columns := make([]string, 0)
+		columnTypes := make([]string, 0)
+		typedMode := -1
 		token = l.NextToken()
 		for {
 			if token.Type != lexer.TOKEN_IDENT {
@@ -128,6 +131,23 @@ func Parse(input string) (*Query, error) {
 			}
 			columns = append(columns, token.Value)
 			token = l.NextToken()
+			isTyped := token.Type == lexer.TOKEN_IDENT
+			if isTyped {
+				if token.Value != "text" && token.Value != "uint64" {
+					return nil, syntaxError("parse create table", fmt.Sprintf("unsupported type %q", token.Value))
+				}
+				columnTypes = append(columnTypes, token.Value)
+				token = l.NextToken()
+			}
+			if typedMode == -1 {
+				if isTyped {
+					typedMode = 1
+				} else {
+					typedMode = 0
+				}
+			} else if (typedMode == 1) != isTyped {
+				return nil, syntaxError("parse create table", "all columns must either declare a type or omit types")
+			}
 			if token.Type == lexer.TOKEN_RPAREN {
 				break
 			}
@@ -147,6 +167,9 @@ func Parse(input string) (*Query, error) {
 		}
 
 		query.Columns = columns
+		if typedMode == 1 {
+			query.ColumnTypes = columnTypes
+		}
 		return query, nil
 
 	case lexer.TOKEN_SELECT:

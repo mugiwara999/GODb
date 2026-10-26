@@ -55,6 +55,73 @@ func decodeTableRow(data []byte, expectedColumns int) ([]string, error) {
 	return values, nil
 }
 
+func (t *Table) decodeRow(data []byte) ([]string, error) {
+	values, err := decodeTableRow(data, len(t.cols))
+	if err != nil {
+		return nil, err
+	}
+	if len(t.colTypes) != len(values) {
+		return nil, fmt.Errorf("table schema has %d types for %d columns", len(t.colTypes), len(values))
+	}
+	for i, value := range values {
+		canonical, err := t.normalizeColumnValue(i, value)
+		if err != nil {
+			return nil, fmt.Errorf("column %q: %w", t.cols[i], err)
+		}
+		if canonical != value {
+			return nil, fmt.Errorf("column %q has noncanonical %s value %q", t.cols[i], typeName(t.colTypes[i]), value)
+		}
+	}
+	return values, nil
+}
+
+func (t *Table) normalizeColumnValue(colIdx int, value string) (string, error) {
+	if colIdx < 0 || colIdx >= len(t.colTypes) {
+		return "", fmt.Errorf("column index %d is out of range", colIdx)
+	}
+	if strings.ContainsRune(value, 0) {
+		return "", fmt.Errorf("values cannot contain NUL")
+	}
+	switch t.colTypes[colIdx] {
+	case pager.ColumnTypeText:
+		return value, nil
+	case pager.ColumnTypeUint64:
+		number, err := strconv.ParseUint(value, 10, 64)
+		if err != nil {
+			return "", fmt.Errorf("invalid UINT64 value %q: %w", value, err)
+		}
+		return strconv.FormatUint(number, 10), nil
+	default:
+		return "", fmt.Errorf("unsupported stored type %d", t.colTypes[colIdx])
+	}
+}
+
+func (t *Table) normalizeFilters(filters []ColEq, operation string) ([]ColEq, error) {
+	normalized := make([]ColEq, len(filters))
+	for i, filter := range filters {
+		if filter.ColIdx < 0 || filter.ColIdx >= len(t.cols) {
+			return nil, fmt.Errorf("%s table %q: filter column index %d is out of range", operation, t.Name, filter.ColIdx)
+		}
+		value, err := t.normalizeColumnValue(filter.ColIdx, filter.Value)
+		if err != nil {
+			return nil, fmt.Errorf("%s table %q: invalid filter for column %q: %w", operation, t.Name, t.cols[filter.ColIdx], err)
+		}
+		normalized[i] = ColEq{ColIdx: filter.ColIdx, Value: value}
+	}
+	return normalized, nil
+}
+
+func typeName(columnType ColumnType) string {
+	switch columnType {
+	case pager.ColumnTypeText:
+		return "TEXT"
+	case pager.ColumnTypeUint64:
+		return "UINT64"
+	default:
+		return fmt.Sprintf("type(%d)", columnType)
+	}
+}
+
 func (t *Table) Insert(values []string) error {
 	return t.mutate(func() error { return t.insert(values) })
 }
@@ -63,10 +130,13 @@ func (t *Table) insert(values []string) error {
 	if len(values)+1 != len(t.cols) {
 		return fmt.Errorf("insert into table %q: expected %d values, got %d", t.Name, len(t.cols)-1, len(values))
 	}
-	for _, value := range values {
-		if strings.ContainsRune(value, 0) {
-			return fmt.Errorf("insert into table %q: values cannot contain NUL", t.Name)
+	values = append([]string(nil), values...)
+	for i, value := range values {
+		canonical, err := t.normalizeColumnValue(i+1, value)
+		if err != nil {
+			return fmt.Errorf("insert into table %q column %q: %w", t.Name, t.cols[i+1], err)
 		}
+		values[i] = canonical
 	}
 	if t.Indexes["id"] == nil {
 		return fmt.Errorf("insert into table %q: missing primary key index", t.Name)
@@ -169,6 +239,10 @@ func (t *Table) Select(columns []string, colEquals []ColEq) ([][]string, error) 
 		}
 		colIdxs = append(colIdxs, idx)
 	}
+	colEquals, err := t.normalizeFilters(colEquals, "select from")
+	if err != nil {
+		return nil, err
+	}
 
 	result = append(result, columns)
 
@@ -205,7 +279,7 @@ func (t *Table) Select(columns []string, colEquals []ColEq) ([][]string, error) 
 			if err != nil {
 				return nil, fmt.Errorf("select from table %q: %w", t.Name, err)
 			}
-			row, err := decodeTableRow(rowData, len(t.cols))
+			row, err := t.decodeRow(rowData)
 			if err != nil {
 				return nil, fmt.Errorf("select from table %q: corrupt row: %w", t.Name, err)
 			}
@@ -243,7 +317,7 @@ func (t *Table) Select(columns []string, colEquals []ColEq) ([][]string, error) 
 			break
 		}
 
-		row, err := decodeTableRow(rowData, len(t.cols))
+		row, err := t.decodeRow(rowData)
 		if err != nil {
 			return nil, fmt.Errorf("select from table %q: corrupt row: %w", t.Name, err)
 		}
@@ -276,6 +350,10 @@ func (t *Table) Delete(filters []ColEq) error {
 }
 
 func (t *Table) delete(filters []ColEq) error {
+	filters, err := t.normalizeFilters(filters, "delete from")
+	if err != nil {
+		return err
+	}
 	index := t.Indexes["id"]
 	if index == nil {
 		return fmt.Errorf("delete from table %q: missing primary key index", t.Name)
@@ -291,7 +369,7 @@ func (t *Table) delete(filters []ColEq) error {
 			break
 		}
 
-		row, err := decodeTableRow(rowData, len(t.cols))
+		row, err := t.decodeRow(rowData)
 		if err != nil {
 			return fmt.Errorf("delete from table %q: corrupt row: %w", t.Name, err)
 		}
@@ -339,18 +417,20 @@ func (t *Table) Update(filters []ColEq, toUpdate []UpdateValue) error {
 }
 
 func (t *Table) update(filters []ColEq, toUpdate []UpdateValue) error {
-	for _, filter := range filters {
-		if filter.ColIdx < 0 || filter.ColIdx >= len(t.cols) {
-			return fmt.Errorf("update table %q: filter column index %d is out of range", t.Name, filter.ColIdx)
-		}
+	filters, err := t.normalizeFilters(filters, "update")
+	if err != nil {
+		return err
 	}
-	for _, update := range toUpdate {
+	toUpdate = append([]UpdateValue(nil), toUpdate...)
+	for i, update := range toUpdate {
 		if update.ColIdx <= 0 || update.ColIdx >= len(t.cols) {
 			return fmt.Errorf("update table %q: update column index %d is invalid", t.Name, update.ColIdx)
 		}
-		if strings.ContainsRune(update.Value, 0) {
-			return fmt.Errorf("update table %q: values cannot contain NUL", t.Name)
+		canonical, err := t.normalizeColumnValue(update.ColIdx, update.Value)
+		if err != nil {
+			return fmt.Errorf("update table %q column %q: %w", t.Name, t.cols[update.ColIdx], err)
 		}
+		toUpdate[i].Value = canonical
 	}
 
 	type change struct {
@@ -372,7 +452,7 @@ func (t *Table) update(filters []ColEq, toUpdate []UpdateValue) error {
 			break
 		}
 
-		row, err := decodeTableRow(rowData, len(t.cols))
+		row, err := t.decodeRow(rowData)
 		if err != nil {
 			return fmt.Errorf("update table %q: corrupt row: %w", t.Name, err)
 		}

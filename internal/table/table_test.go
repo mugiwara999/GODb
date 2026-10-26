@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -168,6 +169,103 @@ func TestRejectMalformedRowsAtTableReadAndMutationBoundaries(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestTypedUint64ColumnsCanonicalizeValidateAndPersist(t *testing.T) {
+	setupTableTest(t)
+	tbl, err := table.CreateWithTypes("typed_users", []table.Column{
+		{Name: "age", Type: table.ColumnUint64},
+		{Name: "name", Type: table.ColumnText},
+	})
+	if err != nil {
+		t.Fatalf("CreateWithTypes: %v", err)
+	}
+	if got, want := tbl.GetColumnTypes(), []table.ColumnType{table.ColumnUint64, table.ColumnUint64, table.ColumnText}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("GetColumnTypes() = %v, want %v", got, want)
+	}
+	if err := tbl.Insert([]string{"00042", "Ada"}); err != nil {
+		t.Fatalf("Insert canonicalizable UINT64: %v", err)
+	}
+	rows, err := tbl.Select([]string{"age", "name"}, []table.ColEq{{ColIdx: 1, Value: "00042"}})
+	if err != nil {
+		t.Fatalf("Select numeric filter: %v", err)
+	}
+	if len(rows) != 2 || strings.Join(rows[1], ",") != "42,Ada" {
+		t.Fatalf("Select numeric row = %q, want [42 Ada]", rows)
+	}
+	if err := tbl.Update([]table.ColEq{{ColIdx: 0, Value: "0"}}, []table.UpdateValue{{ColIdx: 1, Value: "00043"}}); err != nil {
+		t.Fatalf("Update UINT64: %v", err)
+	}
+	if err := tbl.Insert([]string{"not-a-number", "Grace"}); err == nil {
+		t.Fatal("Insert accepted invalid UINT64 value")
+	}
+	if err := tbl.Update([]table.ColEq{{ColIdx: 0, Value: "0"}}, []table.UpdateValue{{ColIdx: 1, Value: "18446744073709551616"}}); err == nil {
+		t.Fatal("Update accepted overflowing UINT64 value")
+	}
+	if _, err := tbl.Select([]string{"*"}, []table.ColEq{{ColIdx: 1, Value: "1.5"}}); err == nil {
+		t.Fatal("Select accepted invalid UINT64 filter")
+	}
+	if err := tbl.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	reopened, err := table.Open("TYPED_USERS")
+	if err != nil {
+		t.Fatalf("Open typed table: %v", err)
+	}
+	defer reopened.Close()
+	if got, want := reopened.GetColumnTypes(), []table.ColumnType{table.ColumnUint64, table.ColumnUint64, table.ColumnText}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("GetColumnTypes after reopen = %v, want %v", got, want)
+	}
+	rows, err = reopened.Select([]string{"age", "name"}, nil)
+	if err != nil {
+		t.Fatalf("Select after reopen: %v", err)
+	}
+	if len(rows) != 2 || strings.Join(rows[1], ",") != "43,Ada" {
+		t.Fatalf("reopened rows = %q, want [43 Ada]", rows)
+	}
+	if err := reopened.ValidatePrimaryIndex(); err != nil {
+		t.Fatalf("ValidatePrimaryIndex: %v", err)
+	}
+}
+
+func TestTypedRowCorruptionIsRejectedByReadersAndValidator(t *testing.T) {
+	setupTableTest(t)
+	tbl, err := table.CreateWithTypes("typed_corrupt", []table.Column{
+		{Name: "age", Type: table.ColumnUint64},
+		{Name: "name", Type: table.ColumnText},
+	})
+	if err != nil {
+		t.Fatalf("CreateWithTypes: %v", err)
+	}
+	defer tbl.Close()
+	if err := tbl.Insert([]string{"42", "Ada"}); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	page, err := tbl.Pager.GetPage(1)
+	if err != nil {
+		t.Fatalf("GetPage: %v", err)
+	}
+	if err := page.ReplaceRow(0, []byte("0\x00not-a-number\x00Ada\x00")); err != nil {
+		t.Fatalf("ReplaceRow: %v", err)
+	}
+	if err := tbl.Pager.Flush(page); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	checks := []struct {
+		name string
+		run  func() error
+	}{
+		{name: "scan select", run: func() error { _, err := tbl.Select([]string{"*"}, nil); return err }},
+		{name: "indexed select", run: func() error { _, err := tbl.Select([]string{"*"}, []table.ColEq{{ColIdx: 0, Value: "0"}}); return err }},
+		{name: "update", run: func() error { return tbl.Update(nil, []table.UpdateValue{{ColIdx: 2, Value: "Grace"}}) }},
+		{name: "primary index validation", run: tbl.ValidatePrimaryIndex},
+	}
+	for _, check := range checks {
+		if err := check.run(); err == nil || !strings.Contains(err.Error(), "corrupt row") {
+			t.Errorf("%s error = %v, want corrupt row error", check.name, err)
+		}
 	}
 }
 

@@ -683,6 +683,106 @@ func TestRejectsImpossibleMetadataColumnCountBeforeAllocation(t *testing.T) {
 	}
 }
 
+func TestTypedSchemaRoundTripAndLegacyInference(t *testing.T) {
+	t.Run("typed metadata", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "typed-schema.bin")
+		pg, err := pager.CreatePager(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := pg.WriteSchema([]string{"id", "age", "name"}, []pager.ColumnType{
+			pager.ColumnTypeUint64, pager.ColumnTypeUint64, pager.ColumnTypeText,
+		}); err != nil {
+			t.Fatalf("WriteSchema: %v", err)
+		}
+		if err := pg.Close(); err != nil {
+			t.Fatal(err)
+		}
+		opened, err := pager.OpenPager(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer opened.Close()
+		cols, types, err := opened.GetSchema()
+		if err != nil {
+			t.Fatalf("GetSchema: %v", err)
+		}
+		if !equalStrings(cols, []string{"id", "age", "name"}) {
+			t.Fatalf("GetSchema columns = %q", cols)
+		}
+		wantTypes := []pager.ColumnType{pager.ColumnTypeUint64, pager.ColumnTypeUint64, pager.ColumnTypeText}
+		if len(types) != len(wantTypes) {
+			t.Fatalf("GetSchema types = %v, want %v", types, wantTypes)
+		}
+		for i := range types {
+			if types[i] != wantTypes[i] {
+				t.Fatalf("GetSchema type %d = %v, want %v", i, types[i], wantTypes[i])
+			}
+		}
+		if _, err := opened.LastID(); err != nil {
+			t.Fatalf("LastID on v2 metadata: %v", err)
+		}
+	})
+
+	t.Run("legacy metadata defaults to text tags", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "legacy-schema.bin")
+		pg, err := pager.CreatePager(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer pg.Close()
+		if err := pg.WriteColumns([]string{"ID", "value"}); err != nil {
+			t.Fatalf("WriteColumns: %v", err)
+		}
+		cols, types, err := pg.GetSchema()
+		if err != nil {
+			t.Fatalf("GetSchema: %v", err)
+		}
+		if !equalStrings(cols, []string{"ID", "value"}) || len(types) != 2 || types[0] != pager.ColumnTypeUint64 || types[1] != pager.ColumnTypeText {
+			t.Fatalf("legacy schema = columns %q types %v", cols, types)
+		}
+	})
+}
+
+func TestTypedSchemaRejectsCorruptTypeTags(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "corrupt-type-tag.bin")
+	pg, err := pager.CreatePager(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pg.Close()
+	if err := pg.WriteSchema([]string{"id", "age"}, []pager.ColumnType{pager.ColumnTypeUint64, pager.ColumnTypeUint64}); err != nil {
+		t.Fatalf("WriteSchema: %v", err)
+	}
+	page, err := pg.GetPage(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	typeOffset := pager.ColNamesOffset + len("id") + 1 + len("age") + 1
+	page.Data[typeOffset+1] = 0xff
+	if err := pg.Flush(page); err != nil {
+		t.Fatalf("Flush corrupted tag: %v", err)
+	}
+	if _, _, err := pg.GetSchema(); !errors.Is(err, pager.ErrMetadataCorrupt) {
+		t.Fatalf("GetSchema error = %v, want ErrMetadataCorrupt", err)
+	}
+}
+
+func TestWriteSchemaRejectsInvalidTypesWithoutAllocatingPage(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "invalid-type.bin")
+	pg, err := pager.CreatePager(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pg.Close()
+	if err := pg.WriteSchema([]string{"id", "age"}, []pager.ColumnType{pager.ColumnTypeUint64, 0}); !errors.Is(err, pager.ErrMetadataCorrupt) {
+		t.Fatalf("WriteSchema error = %v, want ErrMetadataCorrupt", err)
+	}
+	if got := pg.GetNumPages(); got != 0 {
+		t.Fatalf("page count after rejected schema = %d, want 0", got)
+	}
+}
+
 func TestCorruptedSlotOffsetsAndHeaders(t *testing.T) {
 	// Catches bad slot offsets and corrupted page headers.
 	// Both are common after partial writes, torn pages, or memory corruption.

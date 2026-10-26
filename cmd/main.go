@@ -42,7 +42,20 @@ func run(input io.Reader, output io.Writer) {
 
 		switch query.Type {
 		case "create":
-			tbl, err := table.Create(query.Table, query.Columns)
+			var tbl *table.Table
+			if len(query.ColumnTypes) == 0 {
+				tbl, err = table.Create(query.Table, query.Columns)
+			} else {
+				columns := make([]table.Column, len(query.Columns))
+				for i, name := range query.Columns {
+					columnType := table.ColumnText
+					if query.ColumnTypes[i] == "uint64" {
+						columnType = table.ColumnUint64
+					}
+					columns[i] = table.Column{Name: name, Type: columnType}
+				}
+				tbl, err = table.CreateWithTypes(query.Table, columns)
+			}
 			if err != nil {
 				fmt.Fprintln(output, err)
 				break

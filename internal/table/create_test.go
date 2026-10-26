@@ -190,6 +190,33 @@ func TestOpenValidatesAndNormalizesStoredColumns(t *testing.T) {
 	}
 }
 
+func TestOpenRejectsTypedSchemaWithNonUint64PrimaryID(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "data")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DATA_DIR", dataDir)
+	tbl, err := CreateWithTypes("bad_id_type", []Column{{Name: "age", Type: ColumnUint64}})
+	if err != nil {
+		t.Fatalf("CreateWithTypes: %v", err)
+	}
+	page, err := tbl.Pager.GetPage(0)
+	if err != nil {
+		t.Fatalf("GetPage metadata: %v", err)
+	}
+	typeOffset := pager.ColNamesOffset + len("id") + 1 + len("age") + 1
+	page.Data[typeOffset] = byte(pager.ColumnTypeText)
+	if err := tbl.Pager.Flush(page); err != nil {
+		t.Fatalf("Flush metadata: %v", err)
+	}
+	if err := tbl.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if _, err := Open("bad_id_type"); !errors.Is(err, pager.ErrMetadataCorrupt) {
+		t.Fatalf("Open error = %v, want ErrMetadataCorrupt", err)
+	}
+}
+
 func TestCreatePublicationFailureCleansPartialFiles(t *testing.T) {
 	for _, failureStep := range []string{"after_marker", "after_table_publish", "after_index_publish"} {
 		t.Run(failureStep, func(t *testing.T) {

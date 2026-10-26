@@ -23,10 +23,23 @@ type Table struct {
 	Name       string
 	Path       string
 	cols       []string
+	colTypes   []pager.ColumnType
 	Indexes    map[string]*btree.Index
 	lastID     uint64
 	mutationMu sync.Mutex
 	poisoned   bool
+}
+
+type ColumnType = pager.ColumnType
+
+const (
+	ColumnText   = pager.ColumnTypeText
+	ColumnUint64 = pager.ColumnTypeUint64
+)
+
+type Column struct {
+	Name string
+	Type ColumnType
 }
 
 var (
@@ -66,7 +79,7 @@ func openTable(name, path string) (*Table, error) {
 		return nil, fmt.Errorf("open table %q at %q: %w", name, path, err)
 	}
 
-	cols, err := pg.GetColumns()
+	cols, colTypes, err := pg.GetSchema()
 	if err != nil {
 		_ = pg.Close()
 		return nil, fmt.Errorf("open table %q at %q: %w", name, path, err)
@@ -75,6 +88,10 @@ func openTable(name, path string) (*Table, error) {
 	if err != nil {
 		_ = pg.Close()
 		return nil, fmt.Errorf("open table %q at %q: %w", name, path, err)
+	}
+	if len(colTypes) != len(cols) || len(colTypes) == 0 || colTypes[0] != pager.ColumnTypeUint64 {
+		_ = pg.Close()
+		return nil, fmt.Errorf("open table %q at %q: %w (generated id column must have UINT64 type)", name, path, pager.ErrMetadataCorrupt)
 	}
 
 	idxs := make(map[string]*btree.Index)
@@ -102,12 +119,13 @@ func openTable(name, path string) (*Table, error) {
 	}
 
 	return &Table{
-		Pager:   pg,
-		Name:    strings.ToLower(name),
-		Path:    path,
-		cols:    cols,
-		Indexes: idxs,
-		lastID:  lastID,
+		Pager:    pg,
+		Name:     strings.ToLower(name),
+		Path:     path,
+		cols:     cols,
+		colTypes: colTypes,
+		Indexes:  idxs,
+		lastID:   lastID,
 	}, nil
 }
 
@@ -191,7 +209,7 @@ func (t *Table) reopenAfterRollback() error {
 	if err != nil {
 		return err
 	}
-	t.Pager, t.cols, t.Indexes, t.lastID = reopened.Pager, reopened.cols, reopened.Indexes, reopened.lastID
+	t.Pager, t.cols, t.colTypes, t.Indexes, t.lastID = reopened.Pager, reopened.cols, reopened.colTypes, reopened.Indexes, reopened.lastID
 	return nil
 }
 
@@ -201,26 +219,63 @@ func Create(name string, cols []string) (*Table, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(cols) == 0 {
+	canonicalCols, err := normalizeCreateColumns(name, cols)
+	if err != nil {
+		return nil, err
+	}
+	return createCanonicalTable(name, canonicalCols, nil)
+}
+
+func CreateWithTypes(name string, columns []Column) (*Table, error) {
+	var err error
+	name, err = canonicalIdentifier(name, "table")
+	if err != nil {
+		return nil, err
+	}
+	if len(columns) == 0 {
 		return nil, fmt.Errorf("create table %q: at least one column name is required", name)
+	}
+	cols := make([]string, 0, len(columns))
+	types := make([]pager.ColumnType, 1, len(columns)+1)
+	types[0] = pager.ColumnTypeUint64
+	for _, column := range columns {
+		if column.Type != pager.ColumnTypeText && column.Type != pager.ColumnTypeUint64 {
+			return nil, fmt.Errorf("create table %q: unsupported type %d for column %q", name, column.Type, column.Name)
+		}
+		cols = append(cols, column.Name)
+		types = append(types, column.Type)
+	}
+	canonicalCols, err := normalizeCreateColumns(name, cols)
+	if err != nil {
+		return nil, err
+	}
+	return createCanonicalTable(name, canonicalCols, types)
+}
+
+func normalizeCreateColumns(tableName string, cols []string) ([]string, error) {
+	if len(cols) == 0 {
+		return nil, fmt.Errorf("create table %q: at least one column name is required", tableName)
 	}
 	canonicalCols := make([]string, 0, len(cols))
 	seenCols := make(map[string]struct{}, len(cols))
 	for _, col := range cols {
 		canonicalCol, err := canonicalIdentifier(col, "column")
 		if err != nil {
-			return nil, fmt.Errorf("create table %q: %w", name, err)
+			return nil, fmt.Errorf("create table %q: %w", tableName, err)
 		}
 		if canonicalCol == "id" {
-			return nil, fmt.Errorf("create table %q: column name %q is reserved for the generated primary key", name, col)
+			return nil, fmt.Errorf("create table %q: column name %q is reserved for the generated primary key", tableName, col)
 		}
 		if _, exists := seenCols[canonicalCol]; exists {
-			return nil, fmt.Errorf("create table %q: duplicate column name %q", name, canonicalCol)
+			return nil, fmt.Errorf("create table %q: duplicate column name %q", tableName, canonicalCol)
 		}
 		seenCols[canonicalCol] = struct{}{}
 		canonicalCols = append(canonicalCols, canonicalCol)
 	}
-	cols = canonicalCols
+	return canonicalCols, nil
+}
+
+func createCanonicalTable(name string, cols []string, types []pager.ColumnType) (*Table, error) {
 
 	path, err := tablePath(name)
 	if err != nil {
@@ -247,7 +302,7 @@ func Create(name string, cols []string) (*Table, error) {
 	if err := removeCreateTemps(path, indexPath); err != nil {
 		return nil, fmt.Errorf("create table %q: remove stale staging files: %w", name, err)
 	}
-	return createTableFiles(name, cols, path, nil)
+	return createTableFilesWithTypes(name, cols, types, path, nil)
 }
 
 func canonicalIdentifier(name, kind string) (string, error) {
@@ -289,6 +344,10 @@ func normalizeStoredColumns(tableName string, cols []string) ([]string, error) {
 // that neither final file exists. The optional hook is used by package tests
 // to simulate interruption between publication steps.
 func createTableFiles(name string, cols []string, path string, afterStep func(string) error) (*Table, error) {
+	return createTableFilesWithTypes(name, cols, nil, path, afterStep)
+}
+
+func createTableFilesWithTypes(name string, cols []string, columnTypes []pager.ColumnType, path string, afterStep func(string) error) (*Table, error) {
 	indexPath := btree.IndexPath(name, "id")
 	tableTemp := path + ".create-tmp"
 	indexTemp := indexPath + ".create-tmp"
@@ -305,10 +364,16 @@ func createTableFiles(name string, cols []string, path string, afterStep func(st
 	closePager := func() error { return pg.Close() }
 	stagedCols := append([]string{"id"}, cols...)
 
-	if err := pg.WriteColumns(stagedCols); err != nil {
+	var schemaErr error
+	if columnTypes == nil {
+		schemaErr = pg.WriteColumns(stagedCols)
+	} else {
+		schemaErr = pg.WriteSchema(stagedCols, columnTypes)
+	}
+	if schemaErr != nil {
 		_ = closePager()
 		_ = cleanupTemps()
-		return nil, fmt.Errorf("write staged table metadata for %q: %w", name, err)
+		return nil, fmt.Errorf("write staged table metadata for %q: %w", name, schemaErr)
 	}
 
 	idx, err := btree.NewIndexAt(name, "id", indexTemp)
@@ -491,6 +556,12 @@ func (t *Table) GetColumns() []string {
 	cols := make([]string, len(t.cols))
 	copy(cols, t.cols)
 	return cols
+}
+
+func (t *Table) GetColumnTypes() []ColumnType {
+	types := make([]ColumnType, len(t.colTypes))
+	copy(types, t.colTypes)
+	return types
 }
 
 func tablePath(name string) (string, error) {
