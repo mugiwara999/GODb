@@ -142,6 +142,7 @@
 - Verification: targeted WAL/table tests and full `go test ./...` passed; `go build ./...`, `go vet ./...`, full `go test -race ./...`, `GOOS=windows GOARCH=amd64 go build ./...`, and `git diff --check` passed.
 - Limitations: the new hooks exercise journal record and sync ordering, but do not yet inject low-level table/index page write errors through the full `Table` mutation wrapper. Torn final commit framing is covered separately by `8ee6105`.
 - Commit: `9e27e0f` (`Inject WAL ordering failures in tests`).
+- Follow-up table integration: `794335f` (`Test rollback after partial table and index writes`) forces an error after the mutation wrapper has written both table metadata and an index leaf, then verifies restored ID/index state and full primary-index consistency. Targeted table/WAL tests, full `go test ./...`, `go build ./...`, `go vet ./...`, and `go test -race ./internal/table ./internal/wal` passed.
 
 ## Prioritized backlog
 
