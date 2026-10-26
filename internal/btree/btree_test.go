@@ -593,6 +593,96 @@ func FuzzBTreePageAccessorsDoNotPanic(f *testing.F) {
 	})
 }
 
+func FuzzIndexValidateSmallImagesDoNotPanic(f *testing.F) {
+	const pageCount = 4
+	const fuzzPageBytes = 32
+	packPages := func(root *BTreePage, pages ...*BTreePage) []byte {
+		packed := make([]byte, pageCount*fuzzPageBytes)
+		meta := &BTreePage{ID: metaPageID}
+		InitMetaPage(meta, "fuzz")
+		copy(packed[metaPageID*fuzzPageBytes:], meta.Data[:fuzzPageBytes])
+		copy(packed[root.ID*fuzzPageBytes:], root.Data[:fuzzPageBytes])
+		for _, page := range pages {
+			copy(packed[page.ID*fuzzPageBytes:], page.Data[:fuzzPageBytes])
+		}
+		return packed
+	}
+	free2 := &BTreePage{ID: 2}
+	free2.Data[0] = byte(FreeNode)
+	binary.LittleEndian.PutUint32(free2.Data[1:5], 3)
+	free3 := &BTreePage{ID: 3}
+	free3.Data[0] = byte(FreeNode)
+	root := &BTreePage{ID: 1}
+	InitLeafPage(root)
+	f.Add(packPages(root, free2, free3))
+
+	badRoot := &BTreePage{ID: 1}
+	badRoot.Data[0] = 0xff
+	f.Add(packPages(badRoot, free2, free3))
+
+	postingRoot := &BTreePage{ID: 1}
+	InitLeafPage(postingRoot)
+	if err := postingRoot.SetKey(0, 7); err != nil {
+		f.Fatal(err)
+	}
+	if err := postingRoot.SetRID(0, RID{pageID: 3, slotID: PostingMarkerSlot}); err != nil {
+		f.Fatal(err)
+	}
+	if err := postingRoot.SetNumKeys(1); err != nil {
+		f.Fatal(err)
+	}
+	posting := &BTreePage{ID: 3}
+	posting.Data[0] = byte(PostingNode)
+	if err := posting.SetPostingRID(0, RID{pageID: 2, slotID: 1}); err != nil {
+		f.Fatal(err)
+	}
+	if err := posting.SetPostingCount(1); err != nil {
+		f.Fatal(err)
+	}
+	if err := posting.SetPostingRID(1, RID{pageID: 3, slotID: 2}); err != nil {
+		f.Fatal(err)
+	}
+	if err := posting.SetPostingCount(2); err != nil {
+		f.Fatal(err)
+	}
+	if err := posting.SetNextPostingPage(3); err != nil {
+		f.Fatal(err)
+	}
+	f.Add(packPages(postingRoot, free2, posting))
+
+	file, err := os.CreateTemp(f.TempDir(), "btree-index-fuzz-*.idx")
+	if err != nil {
+		f.Fatal(err)
+	}
+	f.Cleanup(func() { _ = file.Close() })
+	index := &Index{file: file, rootPageID: 1, numPages: pageCount, freePageID: 2}
+	f.Fuzz(func(t *testing.T, data []byte) {
+		var image [pageCount * PAGE_SIZE]byte
+		for pageID := 0; pageID < pageCount; pageID++ {
+			inputStart := pageID * fuzzPageBytes
+			if inputStart >= len(data) {
+				break
+			}
+			inputEnd := min(inputStart+fuzzPageBytes, len(data))
+			pageStart := pageID * PAGE_SIZE
+			copy(image[pageStart:pageStart+fuzzPageBytes], data[inputStart:inputEnd])
+		}
+		// Keep per-page work small so mutations emphasize the graph and links.
+		// The accessor fuzzer covers over-capacity count corruption directly.
+		for pageID := uint32(1); pageID < pageCount; pageID++ {
+			offset := int(pageID) * PAGE_SIZE
+			switch NodeType(image[offset]) {
+			case LeafNode, InternalNode, PostingNode:
+				binary.LittleEndian.PutUint16(image[offset+1:offset+3], uint16(image[offset+1])%5)
+			}
+		}
+		if _, err := file.WriteAt(image[:], 0); err != nil {
+			t.Fatalf("write fuzz index image: %v", err)
+		}
+		_ = index.Validate()
+	})
+}
+
 func TestSetPostingCountValidatesNodeCapacity(t *testing.T) {
 	var nilPage *BTreePage
 	if err := nilPage.SetPostingCount(0); err == nil {
