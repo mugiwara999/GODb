@@ -319,7 +319,11 @@ func (p *Pager) GetNumCols() (int, error) {
 
 	page, _ := p.GetPage(0)
 
-	numCols := int(binary.LittleEndian.Uint32(page.Data[NumColsOffset : NumColsOffset+NumColsSize]))
+	storedNumCols := binary.LittleEndian.Uint32(page.Data[NumColsOffset : NumColsOffset+NumColsSize])
+	if storedNumCols == 0 || storedNumCols > PAGE_SIZE-ColNamesOffset {
+		return 0, fmt.Errorf("read number of columns from %q: %w (invalid column count %d)", p.path, ErrMetadataCorrupt, storedNumCols)
+	}
+	numCols := int(storedNumCols)
 
 	return numCols, nil
 

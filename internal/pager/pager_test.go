@@ -657,6 +657,32 @@ func TestMetadataCorruptionDetection(t *testing.T) {
 	}
 }
 
+func TestRejectsImpossibleMetadataColumnCountBeforeAllocation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "oversized-column-count.bin")
+	pg, err := pager.CreatePager(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pg.Close()
+	if err := pg.WriteColumns([]string{"id", "name"}); err != nil {
+		t.Fatalf("WriteColumns: %v", err)
+	}
+	metadata, err := pg.GetPage(0)
+	if err != nil {
+		t.Fatalf("GetPage metadata: %v", err)
+	}
+	binary.LittleEndian.PutUint32(metadata.Data[pager.NumColsOffset:pager.NumColsOffset+pager.NumColsSize], ^uint32(0))
+	if err := pg.Flush(metadata); err != nil {
+		t.Fatalf("Flush corrupted metadata: %v", err)
+	}
+	if _, err := pg.GetNumCols(); !errors.Is(err, pager.ErrMetadataCorrupt) {
+		t.Fatalf("GetNumCols error = %v, want ErrMetadataCorrupt", err)
+	}
+	if _, err := pg.GetColumns(); !errors.Is(err, pager.ErrMetadataCorrupt) {
+		t.Fatalf("GetColumns error = %v, want ErrMetadataCorrupt", err)
+	}
+}
+
 func TestCorruptedSlotOffsetsAndHeaders(t *testing.T) {
 	// Catches bad slot offsets and corrupted page headers.
 	// Both are common after partial writes, torn pages, or memory corruption.

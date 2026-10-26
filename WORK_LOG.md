@@ -219,10 +219,19 @@
 - Limitations: offset-safe I/O does not provide snapshot isolation if a writer changes a page while a reader is reading it; the existing README limitation remains.
 - Commit: `69688b0` (`Use offset-based pager page I/O`).
 
+### Bound persisted column counts before allocation
+
+- Priority: corruption resilience. `Pager.GetColumns` converted the persisted 32-bit column count to `int` and allocated a slice before proving the metadata page could contain that many names. A corrupt count could cause excessive allocation or process termination instead of a metadata error.
+- Changes: `GetNumCols` now rejects zero columns and counts larger than the metadata page can minimally encode before converting or allocating.
+- Regression coverage: corrupt the persisted count to `math.MaxUint32` and verify both `GetNumCols` and `GetColumns` return `ErrMetadataCorrupt`.
+- Verification: targeted pager metadata corruption tests, full `GOCACHE=/tmp/goDB-gocache go test ./...`, `GOCACHE=/tmp/goDB-gocache go build ./...`, `GOCACHE=/tmp/goDB-gocache go vet ./...`, `GOCACHE=/tmp/goDB-gocache go test -race ./internal/pager ./internal/table`, and `git diff --check` passed.
+- Limitations: the bound uses the current v1 layout where names start at `ColNamesOffset`; a versioned schema layout must apply its own bound accounting for type metadata.
+- Commit: pending.
+
 ## Prioritized backlog
 
-1. **Define a typed value model and duplicate-key index representation.** Current columns have no types and the B+ tree maps unique `uint64` keys to one RID. This blocks useful secondary indexes because repeated arbitrary string values cannot be represented or compared with stable semantics. Dependencies: schema metadata/versioning and WAL-backed migration or a clear compatibility strategy. Risks: changing existing table/index formats and maintaining multiple RIDs per key. Acceptance: document supported types, key ordering, duplicate behavior, and migration compatibility before exposing secondary-index DDL; add format and recovery tests as part of implementation.
-2. **Run storage durability tests on Windows and Solaris.** Creation and WAL setup sync containing directories, but runtime verification is available only on Linux; both Windows and Solaris are cross-build-only so far. Solaris also uses a process-local lock fallback. Dependencies: native or emulated platform test environments. Risks: directory sync behavior differs and cross-builds do not prove power-loss guarantees. Acceptance: run table creation, interrupted-create recovery, WAL begin/rollback/recovery, and lock tests on each OS; document unsupported semantics or return clear errors if required primitives fail.
+1. **Define a typed value model and duplicate-key index representation.** Current columns have no types and the B+ tree maps unique `uint64` keys to one RID, blocking useful secondary indexes for repeated values. Dependencies: schema metadata versioning and a compatibility path for existing v1 tables. Risks: row-format changes, key-order semantics, multi-RID maintenance, and WAL cost. Acceptance: document supported types and ordering, support v1 as legacy text metadata, and define duplicate-key lookup/delete behavior before adding index DDL. Tests needed: v1 and typed metadata round trips, invalid tags/values, reopen compatibility, and recovery of typed row/index mutations.
+2. **Run storage durability tests on Windows and Solaris.** Creation and WAL setup sync containing directories, but runtime verification is available only on Linux; both targets are cross-build-only so far. Solaris uses a process-local lock fallback. Dependencies: native or emulated test environments. Risks: directory-sync behavior differs and cross-builds do not prove power-loss guarantees. Acceptance: run table creation, interrupted-create recovery, WAL begin/rollback/recovery, and lock tests on each OS; document unsupported semantics or return clear errors if required primitives fail. Tests needed: native runtime coverage of those four paths on Windows and Solaris.
 
 ## Next action
 
