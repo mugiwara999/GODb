@@ -253,7 +253,7 @@
 - Regression coverage: backfill from populated tables; duplicate-value equality lookup; index create rejection for text, unknown, primary, and repeated columns; index refresh by a handle opened before creation; update/delete/reopen; row relocation; failed backfill staging cleanup; rejection of a corrupt present index on open; rollback of a mutation when a secondary posting chain is corrupt; index consistency validation.
 - Verification: targeted table tests; full `GOCACHE=/tmp/goDB-gocache go test ./...`, `go build ./...`, `go vet ./...`, race tests for B+ tree/WAL/table, Windows and Solaris cross-builds, and `git diff --check` passed.
 - Limitations: index definitions are represented by the presence of index files, not a catalog; a missing optional index falls back to table scans. `CREATE INDEX` is currently a Go API, not SQL. Only `UINT64` indexes are supported. A crash during backfill may leave a private `.build-tmp` file; it is ignored and replaced on a later index-creation attempt.
-- Commit: pending.
+- Commit: `029a14f` (`Integrate typed secondary indexes`).
 
 ## Prioritized backlog
 
