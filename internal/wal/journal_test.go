@@ -2,11 +2,25 @@ package wal
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
+	"hash/crc32"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func appendJournalTestRecord(data []byte, kind byte, payload []byte) []byte {
+	var header [5]byte
+	header[0] = kind
+	binary.LittleEndian.PutUint32(header[1:], uint32(len(payload)))
+	data = append(data, header[:]...)
+	data = append(data, payload...)
+	var checksum [4]byte
+	binary.LittleEndian.PutUint32(checksum[:], crc32.ChecksumIEEE(data[len(data)-5-len(payload):]))
+	return append(data, checksum[:]...)
+}
 
 func TestRecoverRestoresBeforeImagesAndOriginalFileSize(t *testing.T) {
 	dir := t.TempDir()
@@ -382,4 +396,72 @@ func TestRecoveryCanBeRetriedAfterInjectedRestoreFailures(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestReadLogRecordSizeLimit(t *testing.T) {
+	dir := t.TempDir()
+
+	path := filepath.Join(dir, strings.Repeat("x", maxRecordSize-13-len(dir)))
+	payload := make([]byte, 12+len(path))
+	binary.LittleEndian.PutUint32(payload[:4], uint32(len(path)))
+	copy(payload[12:], path)
+	validLog := append([]byte(nil), journalMagic...)
+	validLog = appendJournalTestRecord(validLog, recordFileStart, payload)
+	validPath := filepath.Join(dir, "max-record.wal")
+	if err := os.WriteFile(validPath, validLog, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readLog(validPath); err != nil {
+		t.Fatalf("readLog rejected a record at the size limit: %v", err)
+	}
+
+	tooLargeHeader := make([]byte, 5)
+	tooLargeHeader[0] = recordFileStart
+	binary.LittleEndian.PutUint32(tooLargeHeader[1:], maxRecordSize+1)
+	tooLargeLog := append(append([]byte(nil), journalMagic...), tooLargeHeader...)
+	tooLargePath := filepath.Join(dir, "oversized-record.wal")
+	if err := os.WriteFile(tooLargePath, tooLargeLog, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readLog(tooLargePath); err == nil {
+		t.Fatal("readLog accepted a record over the size limit")
+	}
+}
+
+func FuzzReadLogDoesNotPanic(f *testing.F) {
+	path := filepath.Join(os.TempDir(), "godb-wal-fuzz-target")
+	fileStart := make([]byte, 12+len(path))
+	binary.LittleEndian.PutUint32(fileStart[:4], uint32(len(path)))
+	binary.LittleEndian.PutUint64(fileStart[4:12], 4096)
+	copy(fileStart[12:], path)
+	valid := append([]byte(nil), journalMagic...)
+	valid = appendJournalTestRecord(valid, recordFileStart, fileStart)
+	valid = appendJournalTestRecord(valid, recordPageBefore, encodePageBefore(path, 0, 16, bytes.Repeat([]byte{0xa5}, 16)))
+	f.Add(valid)
+	f.Add(valid[:len(valid)-1]) // torn checksum
+	badChecksum := append([]byte(nil), valid...)
+	badChecksum[len(badChecksum)-1] ^= 0xff
+	f.Add(badChecksum)
+	oversized := make([]byte, len(journalMagic)+5)
+	copy(oversized, journalMagic)
+	oversized[len(journalMagic)] = recordFileStart
+	binary.LittleEndian.PutUint32(oversized[len(journalMagic)+1:], maxRecordSize+1)
+	f.Add(oversized)
+	unknownRecord := append([]byte(nil), journalMagic...)
+	f.Add(appendJournalTestRecord(unknownRecord, 0xff, nil))
+	committedThenMore := append([]byte(nil), valid...)
+	committedThenMore = appendJournalTestRecord(committedThenMore, recordCommit, nil)
+	committedThenMore = appendJournalTestRecord(committedThenMore, recordCommit, nil)
+	f.Add(committedThenMore)
+
+	fuzzPath := filepath.Join(f.TempDir(), "journal.wal")
+	f.Fuzz(func(t *testing.T, input []byte) {
+		if len(input) > 64<<10 {
+			input = input[:64<<10]
+		}
+		if err := os.WriteFile(fuzzPath, input, 0o600); err != nil {
+			t.Fatalf("write fuzz journal: %v", err)
+		}
+		_, _ = readLog(fuzzPath)
+	})
 }
