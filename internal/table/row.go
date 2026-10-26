@@ -44,6 +44,17 @@ func DeserializeRow(data []byte) []string {
 	return values
 }
 
+func decodeTableRow(data []byte, expectedColumns int) ([]string, error) {
+	if len(data) == 0 || data[len(data)-1] != 0 {
+		return nil, fmt.Errorf("row payload is missing its final field terminator")
+	}
+	values := DeserializeRow(data)
+	if len(values) != expectedColumns {
+		return nil, fmt.Errorf("row has %d values, expected %d", len(values), expectedColumns)
+	}
+	return values, nil
+}
+
 func (t *Table) Insert(values []string) error {
 	return t.mutate(func() error { return t.insert(values) })
 }
@@ -210,7 +221,10 @@ func (t *Table) Select(columns []string, colEquals []ColEq) ([][]string, error) 
 			if err != nil {
 				return nil, fmt.Errorf("select from table %q: %w", t.Name, err)
 			}
-			row := DeserializeRow(rowData)
+			row, err := decodeTableRow(rowData, len(t.cols))
+			if err != nil {
+				return nil, fmt.Errorf("select from table %q: corrupt row: %w", t.Name, err)
+			}
 			match := true
 
 			for _, v := range colEquals {
@@ -245,9 +259,9 @@ func (t *Table) Select(columns []string, colEquals []ColEq) ([][]string, error) 
 			break
 		}
 
-		row := DeserializeRow(rowData)
-		if len(row) < len(t.cols) {
-			return nil, fmt.Errorf("select from table %q: corrupt row has %d values, expected %d", t.Name, len(row), len(t.cols))
+		row, err := decodeTableRow(rowData, len(t.cols))
+		if err != nil {
+			return nil, fmt.Errorf("select from table %q: corrupt row: %w", t.Name, err)
 		}
 
 		match := true
@@ -293,9 +307,9 @@ func (t *Table) delete(filters []ColEq) error {
 			break
 		}
 
-		row := DeserializeRow(rowData)
-		if len(row) < len(t.cols) {
-			return fmt.Errorf("delete from table %q: corrupt row has %d values, expected %d", t.Name, len(row), len(t.cols))
+		row, err := decodeTableRow(rowData, len(t.cols))
+		if err != nil {
+			return fmt.Errorf("delete from table %q: corrupt row: %w", t.Name, err)
 		}
 
 		match := true
@@ -391,9 +405,9 @@ func (t *Table) update(filters []ColEq, toUpdate []UpdateValue) error {
 			break
 		}
 
-		row := DeserializeRow(rowData)
-		if len(row) != len(t.cols) {
-			return fmt.Errorf("update table %q: corrupt row has %d values, expected %d", t.Name, len(row), len(t.cols))
+		row, err := decodeTableRow(rowData, len(t.cols))
+		if err != nil {
+			return fmt.Errorf("update table %q: corrupt row: %w", t.Name, err)
 		}
 
 		match := true

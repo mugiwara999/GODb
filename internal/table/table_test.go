@@ -123,6 +123,54 @@ func TestTableThousandsOfInsertsAndTombstones(t *testing.T) {
 	}
 }
 
+func TestRejectMalformedRowsAtTableReadAndMutationBoundaries(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		payload []byte
+	}{
+		{name: "extra unterminated bytes", payload: []byte("0\x00Ada\x00tail")},
+		{name: "extra terminated field", payload: []byte("0\x00Ada\x00extra\x00")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			setupTableTest(t)
+			tbl, err := table.Create("malformed", []string{"name"})
+			if err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+			defer tbl.Close()
+			if err := tbl.Insert([]string{"Ada"}); err != nil {
+				t.Fatalf("Insert: %v", err)
+			}
+			page, err := tbl.Pager.GetPage(1)
+			if err != nil {
+				t.Fatalf("GetPage: %v", err)
+			}
+			if err := page.ReplaceRow(0, tc.payload); err != nil {
+				t.Fatalf("ReplaceRow malformed payload: %v", err)
+			}
+			if err := tbl.Pager.Flush(page); err != nil {
+				t.Fatalf("Flush malformed payload: %v", err)
+			}
+
+			checks := []struct {
+				name string
+				run  func() error
+			}{
+				{name: "table scan select", run: func() error { _, err := tbl.Select([]string{"*"}, nil); return err }},
+				{name: "indexed select", run: func() error { _, err := tbl.Select([]string{"*"}, []table.ColEq{{ColIdx: 0, Value: "0"}}); return err }},
+				{name: "delete", run: func() error { return tbl.Delete(nil) }},
+				{name: "update", run: func() error { return tbl.Update(nil, []table.UpdateValue{{ColIdx: 1, Value: "Grace"}}) }},
+				{name: "primary index validation", run: tbl.ValidatePrimaryIndex},
+			}
+			for _, check := range checks {
+				if err := check.run(); err == nil || !strings.Contains(err.Error(), "corrupt row") {
+					t.Errorf("%s error = %v, want corrupt row error", check.name, err)
+				}
+			}
+		})
+	}
+}
+
 func TestRejectedInsertDoesNotConsumeIDOrAllocatePage(t *testing.T) {
 	setupTableTest(t)
 

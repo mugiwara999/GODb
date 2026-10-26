@@ -57,9 +57,9 @@ func (t *Table) ValidatePrimaryIndex() error {
 			if err != nil {
 				return fmt.Errorf("validate primary index for table %q: key %d points to invalid row (%d,%d): %w", t.Name, key, location.pageID, location.slotID, err)
 			}
-			row := DeserializeRow(data)
-			if len(row) != len(t.cols) {
-				return fmt.Errorf("validate primary index for table %q: key %d points to row with %d values, expected %d", t.Name, key, len(row), len(t.cols))
+			row, err := decodeTableRow(data, len(t.cols))
+			if err != nil {
+				return fmt.Errorf("validate primary index for table %q: key %d points to corrupt row: %w", t.Name, key, err)
 			}
 			rowID, err := strconv.ParseUint(row[0], 10, 64)
 			if err != nil || rowID != key {
@@ -86,9 +86,9 @@ func (t *Table) ValidatePrimaryIndex() error {
 		if data == nil {
 			break
 		}
-		row := DeserializeRow(data)
-		if len(row) != len(t.cols) {
-			return fmt.Errorf("validate primary index for table %q: live row has %d values, expected %d", t.Name, len(row), len(t.cols))
+		row, err := decodeTableRow(data, len(t.cols))
+		if err != nil {
+			return fmt.Errorf("validate primary index for table %q: corrupt live row: %w", t.Name, err)
 		}
 		id, err := strconv.ParseUint(row[0], 10, 64)
 		if err != nil {

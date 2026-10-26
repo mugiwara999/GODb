@@ -172,13 +172,23 @@
 - Regression coverage: a command-loop test creates a table, inserts and selects a row, updates it, deletes it, checks missing-column and malformed-SQL errors, then reopens the table and validates persisted row and primary-index state.
 - Verification: `GOCACHE=/tmp/goDB-gocache go test ./cmd ./internal/btree`, full `GOCACHE=/tmp/goDB-gocache go test ./...`, `GOCACHE=/tmp/goDB-gocache go build ./...`, `GOCACHE=/tmp/goDB-gocache go vet ./...`, and `git diff --check` passed.
 - Limitations: the CLI is still a single-line, prompt-oriented interface; this test covers the documented statement subset rather than interactive terminal behavior or multi-line input.
-- Commit: `e47f635` (`Test SQL command loop integration`).
+- Commit: `b4a568d` (`Test SQL command loop integration`).
+
+### Reject malformed row payloads at table boundaries
+
+- Priority: storage correctness. Slotted-page validation verifies byte ranges, but table decoding silently ignored trailing bytes without a NUL terminator. SELECT and DELETE also accepted extra serialized fields beyond the table schema.
+- Assessment: secondary indexes are premature with the current model. Columns have no types and every value is an arbitrary string; the B+ tree accepts only unique `uint64` keys and stores one RID per key, so repeated string or numeric values cannot be indexed correctly. Typed columns and a duplicate-key or key-to-RID-list design need to precede a secondary-index feature.
+- Changes: added strict table-row decoding that requires a final field terminator and exactly the declared number of columns. SELECT (including primary-key lookup), DELETE, UPDATE, and primary-index consistency validation now share this check.
+- Regression coverage: malformed persisted payloads with unterminated trailing bytes and with extra terminated fields are rejected by table scans, indexed SELECT, DELETE, UPDATE, and `ValidatePrimaryIndex`.
+- Verification: targeted `GOCACHE=/tmp/goDB-gocache go test ./internal/table` and full `GOCACHE=/tmp/goDB-gocache go test ./...`, `GOCACHE=/tmp/goDB-gocache go build ./...`, `GOCACHE=/tmp/goDB-gocache go vet ./...`, and `git diff --check` passed.
+- Limitations: `DeserializeRow` remains a permissive low-level helper for compatibility; table operations use the strict schema-aware decoder.
+- Commit: pending.
 
 ## Prioritized backlog
 
-1. **Assess secondary-index support.** Current table creation only builds the primary `id` index and non-ID filters use scans. This matters for lookup performance, but key encoding and maintenance must be designed before adding indexes. Dependencies: define supported value types and uniqueness semantics, then update/delete/relocation hooks. Risks: current B+ tree keys are `uint64`, arbitrary strings need a stable ordered encoding, and extra indexes multiply WAL writes. Acceptance: either document scans as the current behavior or implement typed secondary indexes with WAL-backed consistency tests and query-selection coverage.
+1. **Define a typed value model and duplicate-key index representation.** Current columns have no types and the B+ tree maps unique `uint64` keys to one RID. This blocks useful secondary indexes because repeated arbitrary string values cannot be represented or compared with stable semantics. Dependencies: schema metadata/versioning and WAL-backed migration or a clear compatibility strategy. Risks: changing existing table/index formats and maintaining multiple RIDs per key. Acceptance: document supported types, key ordering, duplicate behavior, and migration compatibility before exposing secondary-index DDL; add format and recovery tests as part of implementation.
 2. **Exercise filesystem durability boundaries on each supported OS.** Table creation and WAL startup depend on syncing containing directories; Unix uses advisory `flock`, other platforms use a process-local fallback. This matters because build success does not prove runtime durability behavior. Dependencies: platform-specific test environments. Risks: directory sync and lock APIs differ. Acceptance: document supported durability guarantees per OS and run create/recovery tests on each supported platform, or fail explicitly where required primitives are unavailable.
 
 ## Next action
 
-Next task: inspect the query path and storage/value model to assess whether secondary indexes are feasible with current `uint64` B+ tree keys and WAL mutation hooks. Preserve the supplied untracked `AGENTS.md`.
+Next task: inspect durability and locking implementations per OS, then run runtime create/recovery checks on available platforms and document any unsupported guarantees. Preserve the supplied untracked `AGENTS.md`.
