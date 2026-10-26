@@ -12,16 +12,23 @@ type Pair struct {
 	ColValue string
 }
 
+type RangePair struct {
+	ColName  string
+	Operator string
+	ColValue string
+}
+
 var ErrInvalidSyntax = errors.New("invalid syntax")
 
 type Query struct {
-	Type        string
-	Table       string
-	Columns     []string
-	ColumnTypes []string
-	Values      []string
-	Filters     []Pair
-	Updates     []Pair
+	Type         string
+	Table        string
+	Columns      []string
+	ColumnTypes  []string
+	Values       []string
+	Filters      []Pair
+	RangeFilters []RangePair
+	Updates      []Pair
 }
 
 func syntaxError(op, msg string) error {
@@ -38,31 +45,39 @@ func unexpectedToken(op string, token lexer.Token) error {
 	return syntaxError(op, fmt.Sprintf("unexpected token %q", token.Value))
 }
 
-func parseFilters(l *lexer.Lexer, token lexer.Token, op string) ([]Pair, error) {
+func parseFilters(l *lexer.Lexer, token lexer.Token, op string, allowRanges bool) ([]Pair, []RangePair, error) {
 	filters := make([]Pair, 0)
+	var ranges []RangePair
 	for {
 		if token.Type != lexer.TOKEN_IDENT {
-			return nil, unexpectedToken(op, token)
+			return nil, nil, unexpectedToken(op, token)
 		}
 
 		colName := token.Value
-		token = l.NextToken()
-		if token.Type != lexer.TOKEN_EQ {
-			return nil, syntaxError(op, fmt.Sprintf("expected '=' after column %q", colName))
+		operator := l.NextToken()
+		operatorValue := operator.Value
+		if operator.Type != lexer.TOKEN_EQ {
+			if !allowRanges || operator.Type != lexer.TOKEN_LT && operator.Type != lexer.TOKEN_LTE && operator.Type != lexer.TOKEN_GT && operator.Type != lexer.TOKEN_GTE {
+				return nil, nil, syntaxError(op, fmt.Sprintf("expected '=' after column %q", colName))
+			}
 		}
 
 		token = l.NextToken()
 		if token.Type != lexer.TOKEN_IDENT && token.Type != lexer.TOKEN_STRING && token.Type != lexer.TOKEN_NUMBER {
-			return nil, syntaxError(op, fmt.Sprintf("expected value after column %q", colName))
+			return nil, nil, syntaxError(op, fmt.Sprintf("expected value after column %q", colName))
 		}
 
-		filters = append(filters, Pair{ColName: colName, ColValue: token.Value})
+		if operator.Type == lexer.TOKEN_EQ {
+			filters = append(filters, Pair{ColName: colName, ColValue: token.Value})
+		} else {
+			ranges = append(ranges, RangePair{ColName: colName, Operator: operatorValue, ColValue: token.Value})
+		}
 		token = l.NextToken()
 		if token.Type == lexer.TOKEN_EOF {
-			return filters, nil
+			return filters, ranges, nil
 		}
 		if token.Type != lexer.TOKEN_AND {
-			return nil, unexpectedToken(op, token)
+			return nil, nil, unexpectedToken(op, token)
 		}
 		token = l.NextToken()
 	}
@@ -238,11 +253,12 @@ func Parse(input string) (*Query, error) {
 			return nil, syntaxError("parse select", "expected WHERE after table name")
 		}
 
-		filters, err := parseFilters(l, l.NextToken(), "parse select where clause")
+		filters, ranges, err := parseFilters(l, l.NextToken(), "parse select where clause", true)
 		if err != nil {
 			return nil, err
 		}
 		query.Filters = filters
+		query.RangeFilters = ranges
 		return query, nil
 
 	case lexer.TOKEN_DELETE:
@@ -267,9 +283,12 @@ func Parse(input string) (*Query, error) {
 			return nil, syntaxError("parse delete", "expected WHERE after table name")
 		}
 
-		filters, err := parseFilters(l, l.NextToken(), "parse delete where clause")
+		filters, ranges, err := parseFilters(l, l.NextToken(), "parse delete where clause", false)
 		if err != nil {
 			return nil, err
+		}
+		if len(ranges) > 0 {
+			return nil, syntaxError("parse delete where clause", "range predicates are supported only for SELECT")
 		}
 		query.Filters = filters
 		return query, nil
@@ -368,9 +387,12 @@ func Parse(input string) (*Query, error) {
 			return nil, syntaxError("parse update", "expected WHERE after assignments")
 		}
 
-		filters, err := parseFilters(l, l.NextToken(), "parse update where clause")
+		filters, ranges, err := parseFilters(l, l.NextToken(), "parse update where clause", false)
 		if err != nil {
 			return nil, err
+		}
+		if len(ranges) > 0 {
+			return nil, syntaxError("parse update where clause", "range predicates are supported only for SELECT")
 		}
 		query.Filters = filters
 		return query, nil

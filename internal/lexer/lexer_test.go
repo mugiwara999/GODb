@@ -38,3 +38,19 @@ func TestNextTokenReportsIllegalInput(t *testing.T) {
 		})
 	}
 }
+
+func TestNextTokenRangeOperators(t *testing.T) {
+	input := "age<10 AND age<=20 AND age>1 AND age>=2"
+	want := []Token{
+		{TOKEN_IDENT, "age"}, {TOKEN_LT, "<"}, {TOKEN_NUMBER, "10"}, {TOKEN_AND, "and"},
+		{TOKEN_IDENT, "age"}, {TOKEN_LTE, "<="}, {TOKEN_NUMBER, "20"}, {TOKEN_AND, "and"},
+		{TOKEN_IDENT, "age"}, {TOKEN_GT, ">"}, {TOKEN_NUMBER, "1"}, {TOKEN_AND, "and"},
+		{TOKEN_IDENT, "age"}, {TOKEN_GTE, ">="}, {TOKEN_NUMBER, "2"}, {TOKEN_EOF, ""},
+	}
+	l := New(input)
+	for i, expected := range want {
+		if got := l.NextToken(); got != expected {
+			t.Fatalf("token %d = %#v, want %#v", i, got, expected)
+		}
+	}
+}

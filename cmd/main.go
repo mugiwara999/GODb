@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/mugiwara999/goDB/internal/parser"
@@ -90,7 +91,17 @@ func run(input io.Reader, output io.Writer) {
 					fmt.Fprintln(output, err)
 					break
 				}
-				res, err := tbl.Select(query.Columns, filters)
+				var res [][]string
+				if len(query.RangeFilters) > 0 {
+					rangeBy, err := resolveRangeFilters(tbl, query.RangeFilters)
+					if err != nil {
+						fmt.Fprintln(output, err)
+						break
+					}
+					res, err = tbl.SelectRange(query.Columns, rangeBy, filters)
+				} else {
+					res, err = tbl.Select(query.Columns, filters)
+				}
 				if err != nil {
 					fmt.Fprintln(output, err)
 					break
@@ -154,6 +165,53 @@ func resolveFilters(tbl *table.Table, filters []parser.Pair) ([]table.ColEq, err
 	}
 
 	return resolved, nil
+}
+
+func resolveRangeFilters(tbl *table.Table, filters []parser.RangePair) (table.Uint64Range, error) {
+	if len(filters) == 0 {
+		return table.Uint64Range{}, fmt.Errorf("range select requires at least one range predicate")
+	}
+	columns := tbl.GetColumns()
+	types := tbl.GetColumnTypes()
+	selected := table.Uint64Range{ColIdx: -1}
+	for _, filter := range filters {
+		columnIndex := slices.Index(columns, filter.ColName)
+		if columnIndex < 0 {
+			return table.Uint64Range{}, fmt.Errorf("table %q: column %q does not exist", tbl.Name, filter.ColName)
+		}
+		if types[columnIndex] != table.ColumnUint64 {
+			return table.Uint64Range{}, fmt.Errorf("table %q: range column %q must be UINT64", tbl.Name, filter.ColName)
+		}
+		if selected.ColIdx >= 0 && selected.ColIdx != columnIndex {
+			return table.Uint64Range{}, fmt.Errorf("table %q: one range column is supported per SELECT", tbl.Name)
+		}
+		selected.ColIdx = columnIndex
+		value, err := strconv.ParseUint(filter.ColValue, 10, 64)
+		if err != nil {
+			return table.Uint64Range{}, fmt.Errorf("table %q: invalid UINT64 range value %q: %w", tbl.Name, filter.ColValue, err)
+		}
+		switch filter.Operator {
+		case ">", ">=":
+			inclusive := filter.Operator == ">="
+			if selected.Lower == nil || value > *selected.Lower {
+				selected.Lower = &value
+				selected.LowerInclusive = inclusive
+			} else if value == *selected.Lower {
+				selected.LowerInclusive = selected.LowerInclusive && inclusive
+			}
+		case "<", "<=":
+			inclusive := filter.Operator == "<="
+			if selected.Upper == nil || value < *selected.Upper {
+				selected.Upper = &value
+				selected.UpperInclusive = inclusive
+			} else if value == *selected.Upper {
+				selected.UpperInclusive = selected.UpperInclusive && inclusive
+			}
+		default:
+			return table.Uint64Range{}, fmt.Errorf("unsupported range operator %q", filter.Operator)
+		}
+	}
+	return selected, nil
 }
 
 func resolveUpdates(tbl *table.Table, updates []parser.Pair) ([]table.UpdateValue, error) {

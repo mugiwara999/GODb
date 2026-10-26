@@ -18,6 +18,7 @@ func TestParseSupportedStatements(t *testing.T) {
 		{"drop index", "DROP INDEX ON users(age)", Query{Type: "drop_index", Table: "users", Columns: []string{"age"}}},
 		{"insert", "INSERT INTO users VALUES 'Ada Lovelace', 36", Query{Type: "insert", Table: "users", Values: []string{"Ada Lovelace", "36"}}},
 		{"select", "SELECT id, name FROM users WHERE id=7 AND name='Ada'", Query{Type: "select", Table: "users", Columns: []string{"id", "name"}, Filters: []Pair{{"id", "7"}, {"name", "Ada"}}}},
+		{"select range", "SELECT name FROM users WHERE age>=18 AND age<65 AND name='Ada'", Query{Type: "select", Table: "users", Columns: []string{"name"}, Filters: []Pair{{"name", "Ada"}}, RangeFilters: []RangePair{{"age", ">=", "18"}, {"age", "<", "65"}}}},
 		{"delete all", "DELETE FROM users", Query{Type: "delete", Table: "users"}},
 		{"update", "UPDATE users SET name='Ada', age=37 WHERE id=7", Query{Type: "update", Table: "users", Updates: []Pair{{"name", "Ada"}, {"age", "37"}}, Filters: []Pair{{"id", "7"}}}},
 	}
@@ -54,8 +55,12 @@ func TestParseRejectsMalformedSeparatorsAndTrailingTokens(t *testing.T) {
 		"SELECT id name FROM users",
 		"SELECT id FROM users WHERE id=7 AND",
 		"SELECT id FROM users WHERE AND id=7",
+		"SELECT id FROM users WHERE age>=",
+		"SELECT id FROM users WHERE age><5",
 		"DELETE FROM users WHERE id=7 AND AND name=Ada",
+		"DELETE FROM users WHERE id>7",
 		"UPDATE users SET name=Ada, WHERE id=7",
+		"UPDATE users SET name=Ada WHERE id>=7",
 	}
 	for _, input := range inputs {
 		t.Run(input, func(t *testing.T) {

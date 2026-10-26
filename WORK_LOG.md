@@ -342,12 +342,21 @@
 - Limitations: SQL range predicates are not yet implemented; range selection is available through the Go API. The iterator requires callers to exclude concurrent index mutation; `Table.SelectRange` provides that coordination.
 - Commit: `c65594b` (`Add UINT64 range selection`).
 
+### Add SQL range predicates for SELECT
+
+- Priority: make the new range API usable from the command line. The SQL parser previously accepted equality filters only.
+- Changes: lexer recognizes `<`, `<=`, `>`, and `>=`; SELECT parsing records range filters separately from equality filters. The CLI combines bounds for one `UINT64` column and dispatches to `Table.SelectRange`. Equality predicates can accompany the range. README documents operators and unspecified result ordering.
+- Regression coverage: lexer tokenization; parser range query, malformed bounds, and rejection in UPDATE/DELETE; command-loop scan and indexed range queries with equality filters.
+- Verification: full tests, build, vet, race tests for table/pager/B+ tree/WAL/parser/lexer/CLI, Windows and Solaris cross-builds, and `git diff --check` passed. Initial parser verification found equality-only queries represented an empty nonnil range slice; this was corrected to preserve existing parse output and all checks were rerun.
+- Limitations: SQL supports one ranged column per SELECT; range predicates are not yet supported in UPDATE or DELETE.
+- Commit: pending.
+
 ## Prioritized backlog
 
 1. **Run storage durability tests on Windows and Solaris.** Creation, WAL, table/index lifecycle, and directory sync have runtime verification only on Linux; this host has no Windows/Solaris runtime or guest images. Solaris uses a process-local lock fallback. Dependencies: native or emulated test environments. Risks: directory-sync, rename, unlink, and lock behavior differs; cross-builds and injected Linux failures do not prove power-loss guarantees. Acceptance: run table/index creation and removal, interrupted-create recovery, WAL begin/rollback/recovery, and lock tests on each OS; document unsupported semantics or return clear errors if required primitives fail. Tests needed: native runtime coverage of those paths on Windows and Solaris.
 2. **Design a durable read epoch before shared read locking.** SELECT recovery and refresh currently mutate WAL, pager, and index state under an exclusive lock. A shared-lock change alone is unsafe. Dependencies: define a persisted generation or immutable read-state design and a way for readers to detect pending recovery. Acceptance: concurrent reads overlap while writers/recovery remain excluded, stale handles refresh safely, and readers never observe partially recovered state. Tests/benchmarks needed: process-level readers and writers, race tests, crash-recovery interaction, and before/after parallel query throughput.
-3. **Expose range predicates in SQL.** The B+ tree iterator and `Table.SelectRange` support typed range lookup, but the command language exposes equality only. Dependencies: lexer tokens, parser representation for inclusive/exclusive bounds, and command dispatch. Acceptance: unsigned numeric range filters produce the same exact rows as the Go API and correctly handle empty and unbounded endpoints. Tests needed: parser malformed/range cases and CLI indexed-versus-scan behavior after mutations and reopen.
+3. **Support range predicates in UPDATE and DELETE.** SQL SELECT and the Go API now handle UINT64 ranges, but mutations accept equality filters only. Dependencies: mutation selection must preserve the WAL's atomic rollback behavior and maintain primary/secondary indexes for each matched row. Acceptance: bounded and unbounded ranges update/delete the intended rows and reopen with consistent indexes. Tests needed: indexed and scan paths, duplicate boundary keys, empty ranges, partial-write rollback, and mutation followed by reopen/validation.
 
 ## Next action
 
-Next task: extend the lexer/parser and command loop with UINT64 range predicates backed by `Table.SelectRange`. Continue seeking a Windows/Solaris runtime for durability tests and retain the shared-read epoch design in backlog. Preserve the supplied untracked `AGENTS.md`.
+Next task: add UINT64 range predicates to UPDATE and DELETE while preserving WAL rollback and index consistency. Continue seeking a Windows/Solaris runtime for durability tests and retain the shared-read epoch design in backlog. Preserve the supplied untracked `AGENTS.md`.

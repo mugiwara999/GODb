@@ -72,7 +72,9 @@ func TestCommandLoopCreatesTypedColumnsAndValidatesValues(t *testing.T) {
 		"CREATE TABLE people (age UINT64, name TEXT)",
 		"INSERT INTO people VALUES 00042, 'Ada'",
 		"INSERT INTO people VALUES 42, 'Grace'",
+		"SELECT name FROM people WHERE age>=42 AND age<43",
 		"CREATE INDEX ON people(age)",
+		"SELECT name FROM people WHERE age>=42 AND age<43 AND name='Grace'",
 		"CREATE INDEX ON people(name)",
 		"SELECT age FROM people WHERE age=42",
 		"SELECT name FROM people WHERE name='Grace'",
@@ -87,6 +89,7 @@ func TestCommandLoopCreatesTypedColumnsAndValidatesValues(t *testing.T) {
 	got := output.String()
 	for _, expected := range []string{
 		"age\n42\n",
+		"name\nAda\nGrace\n",
 		"name\nGrace\n",
 		"invalid UINT64 value \"invalid\"",
 		"age\n43\n",

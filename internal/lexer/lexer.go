@@ -30,6 +30,10 @@ const (
 	TOKEN_TABLE
 	TOKEN_LPAREN // (
 	TOKEN_RPAREN //
+	TOKEN_LT     // <
+	TOKEN_LTE    // <=
+	TOKEN_GT     // >
+	TOKEN_GTE    // >=
 )
 
 type Token struct {
@@ -62,6 +66,20 @@ func (l *Lexer) NextToken() Token {
 	case '=':
 		l.pos++
 		return Token{TOKEN_EQ, "="}
+	case '<':
+		l.pos++
+		if l.pos < len(l.input) && l.input[l.pos] == '=' {
+			l.pos++
+			return Token{TOKEN_LTE, "<="}
+		}
+		return Token{TOKEN_LT, "<"}
+	case '>':
+		l.pos++
+		if l.pos < len(l.input) && l.input[l.pos] == '=' {
+			l.pos++
+			return Token{TOKEN_GTE, ">="}
+		}
+		return Token{TOKEN_GT, ">"}
 	case ',':
 		l.pos++
 		return Token{TOKEN_COMMA, ","}
