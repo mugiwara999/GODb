@@ -298,7 +298,7 @@
 - Benchmark evidence on Linux/amd64, 13th Gen Intel Core i5-13500H, `-benchtime=100ms -cpu=1,4`: the 512-match indexed case improved from 6.46 ms and 9.23 MB/op to 0.42 ms and 279 KB/op. The single-match case measured 46 µs / 83 KB versus a table scan at 0.83 ms / 320 KB. Four-CPU parallel indexed reads measured 108 µs/op versus 57 µs/op at one CPU, so contention remains measurable; these short local runs are directional rather than stable performance claims.
 - Verification: full tests, build, vet, race tests for table/WAL/B+ tree/pager, Windows and Solaris cross-builds, targeted benchmarks, and `git diff --check` passed.
 - Limitations: SELECT remains exclusive and readers serialize. Benchmark setup is excluded from operation timing; environment and 100 ms sample durations limit precision.
-- Commit: pending.
+- Commit: `f688ab6` (`Cache pages during indexed selects`).
 
 ## Prioritized backlog
 
