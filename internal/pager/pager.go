@@ -228,6 +228,20 @@ func (p *Pager) GetNumPages() int {
 	return p.numPages
 }
 
+// Refresh updates the in-memory page count after another process has changed
+// the same table file while this pager remained open.
+func (p *Pager) Refresh() error {
+	info, err := p.file.Stat()
+	if err != nil {
+		return fmt.Errorf("refresh pager %q: %w", p.path, err)
+	}
+	if info.Size()%PAGE_SIZE != 0 {
+		return fmt.Errorf("refresh pager %q: %w (file size %d is not a multiple of page size %d)", p.path, ErrCorruptPageData, info.Size(), PAGE_SIZE)
+	}
+	p.numPages = int(info.Size()) / PAGE_SIZE
+	return nil
+}
+
 func (p *Pager) LastID() (uint64, error) {
 	if p.numPages == 0 {
 		return 0, fmt.Errorf("read last ID from %q: %w (metadata page is missing)", p.path, ErrMetadataCorrupt)

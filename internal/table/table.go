@@ -10,6 +10,7 @@ import (
 
 	"github.com/joho/godotenv"
 	"github.com/mugiwara999/goDB/internal/btree"
+	"github.com/mugiwara999/goDB/internal/filelock"
 	"github.com/mugiwara999/goDB/internal/pager"
 	"github.com/mugiwara999/goDB/internal/wal"
 )
@@ -34,10 +35,18 @@ func Open(name string) (*Table, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open table %q: %w", name, err)
 	}
+	lock, err := filelock.Acquire(path + ".lock")
+	if err != nil {
+		return nil, fmt.Errorf("open table %q: %w", name, err)
+	}
+	defer lock.Close()
 	if err := wal.Recover(path + ".wal"); err != nil {
 		return nil, fmt.Errorf("recover table %q: %w", name, err)
 	}
+	return openTable(name, path)
+}
 
+func openTable(name, path string) (*Table, error) {
 	pg, err := pager.OpenPager(path)
 	if err != nil {
 		return nil, fmt.Errorf("open table %q at %q: %w", name, path, err)
@@ -89,8 +98,24 @@ func (t *Table) mutate(fn func() error) error {
 	if t.poisoned {
 		return fmt.Errorf("mutate table %q: table must be reopened after a failed rollback", t.Name)
 	}
+	lock, err := filelock.Acquire(t.Path + ".lock")
+	if err != nil {
+		return fmt.Errorf("lock table %q for mutation: %w", t.Name, err)
+	}
+	defer lock.Close()
 	if err := wal.Recover(t.Path + ".wal"); err != nil {
 		return fmt.Errorf("recover table %q before mutation: %w", t.Name, err)
+	}
+	if err := t.Pager.Refresh(); err != nil {
+		return fmt.Errorf("refresh table %q before mutation: %w", t.Name, err)
+	}
+	for _, idx := range t.Indexes {
+		if err := idx.Refresh(); err != nil {
+			return fmt.Errorf("refresh table %q index before mutation: %w", t.Name, err)
+		}
+	}
+	if t.lastID, err = t.Pager.LastID(); err != nil {
+		return fmt.Errorf("refresh table %q last ID: %w", t.Name, err)
 	}
 
 	j, err := wal.Begin(t.Path + ".wal")
@@ -143,7 +168,7 @@ func (t *Table) reopenAfterRollback() error {
 	if err := t.Pager.Close(); err != nil {
 		return err
 	}
-	reopened, err := Open(t.Name)
+	reopened, err := openTable(t.Name, t.Path)
 	if err != nil {
 		return err
 	}
@@ -160,6 +185,11 @@ func Create(name string, cols []string) (*Table, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create table %q: %w", name, err)
 	}
+	lock, err := filelock.Acquire(path + ".lock")
+	if err != nil {
+		return nil, fmt.Errorf("create table %q: %w", name, err)
+	}
+	defer lock.Close()
 
 	pg, err := pager.CreatePager(path)
 	if err != nil {

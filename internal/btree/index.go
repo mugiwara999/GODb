@@ -643,6 +643,66 @@ func (ind *Index) WritePage(p *BTreePage) error {
 
 func (ind *Index) SetJournal(j *wal.Journal) { ind.journal = j }
 
+// Refresh reloads index metadata after another process changed this index.
+// Callers must hold the table's writer lock so metadata and page reads form a
+// single consistent view.
+func (ind *Index) Refresh() error {
+	var meta [PAGE_SIZE]byte
+	if n, err := ind.file.ReadAt(meta[:], 0); err != nil || n != len(meta) {
+		if err == nil {
+			err = fmt.Errorf("short metadata read: %d bytes", n)
+		}
+		return fmt.Errorf("refresh index %q metadata: %w", ind.path, err)
+	}
+	rootPageID := binary.LittleEndian.Uint32(meta[0:4])
+	numPages := binary.LittleEndian.Uint32(meta[4:8])
+	nameLen := binary.LittleEndian.Uint32(meta[8:12])
+	if numPages < 2 || rootPageID == 0 || rootPageID >= numPages {
+		return fmt.Errorf("refresh index %q: invalid root/page count %d/%d", ind.path, rootPageID, numPages)
+	}
+	if uint64(nameLen)+16 > PAGE_SIZE {
+		return fmt.Errorf("refresh index %q: invalid name length %d", ind.path, nameLen)
+	}
+	freeHeadOffset := 12 + int(nameLen)
+	freePageID := binary.LittleEndian.Uint32(meta[freeHeadOffset : freeHeadOffset+4])
+	if freePageID != 0 && (freePageID >= numPages || freePageID == rootPageID) {
+		return fmt.Errorf("refresh index %q: invalid free-list head %d", ind.path, freePageID)
+	}
+	info, err := ind.file.Stat()
+	if err != nil {
+		return fmt.Errorf("refresh index %q file size: %w", ind.path, err)
+	}
+	wantSize := int64(numPages) * int64(PAGE_SIZE)
+	if info.Size() != wantSize {
+		return fmt.Errorf("refresh index %q: file size %d does not match metadata size %d", ind.path, info.Size(), wantSize)
+	}
+	fresh := &Index{file: ind.file, numPages: numPages}
+	root, err := fresh.GetPage(rootPageID)
+	if err != nil || (root.NodeType() != LeafNode && root.NodeType() != InternalNode) || root.ParentID() != 0 {
+		if err == nil {
+			err = fmt.Errorf("invalid root node type %d or parent %d", root.NodeType(), root.ParentID())
+		}
+		return fmt.Errorf("refresh index %q root page %d: %w", ind.path, rootPageID, err)
+	}
+	if root.NodeType() == LeafNode && root.GetNumKeys() > MaxKeysPerLeaf || root.NodeType() == InternalNode && (root.GetNumKeys() == 0 || root.GetNumKeys() > MaxKeysPerInternal) {
+		return fmt.Errorf("refresh index %q: root page %d has invalid key count %d", ind.path, rootPageID, root.GetNumKeys())
+	}
+	if freePageID != 0 {
+		free, err := fresh.GetPage(freePageID)
+		if err != nil || free.NodeType() != FreeNode {
+			if err == nil {
+				err = fmt.Errorf("invalid free page type %d", free.NodeType())
+			}
+			return fmt.Errorf("refresh index %q free-list head %d: %w", ind.path, freePageID, err)
+		}
+	}
+	ind.rootPageID = rootPageID
+	ind.numPages = numPages
+	ind.freePageID = freePageID
+	ind.freeHeadOffset = freeHeadOffset
+	return nil
+}
+
 func (ind *Index) GetRootPage() (*BTreePage, error) {
 	return ind.GetPage(ind.rootPageID)
 }

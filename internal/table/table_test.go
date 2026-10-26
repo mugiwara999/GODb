@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/mugiwara999/goDB/internal/table"
@@ -162,7 +163,7 @@ func TestRejectedInsertDoesNotConsumeIDOrAllocatePage(t *testing.T) {
 	}
 }
 
-func TestIndexInsertFailureRollsBackLiveRowAndIDReservation(t *testing.T) {
+func TestInsertRejectsClosedIndexBeforeChangingTable(t *testing.T) {
 	setupTableTest(t)
 
 	tbl, err := table.Create("rollback_insert", []string{"name"})
@@ -192,8 +193,15 @@ func TestIndexInsertFailureRollsBackLiveRowAndIDReservation(t *testing.T) {
 		t.Fatalf("LastID after failed index insert = %d, want rollback to 0", lastID)
 	}
 
+	if err := tbl.Pager.Close(); err != nil {
+		t.Fatalf("close stale pager: %v", err)
+	}
+	tbl, err = table.Open("rollback_insert")
+	if err != nil {
+		t.Fatalf("reopen after rejected insert: %v", err)
+	}
 	if err := tbl.Insert([]string{"valid"}); err != nil {
-		t.Fatalf("Insert after failed transaction: %v", err)
+		t.Fatalf("Insert after reopen: %v", err)
 	}
 	rows, err = tbl.Select([]string{"*"}, nil)
 	if err != nil {
@@ -250,7 +258,7 @@ func TestOpenRecoversUncommittedTableAndIndexChanges(t *testing.T) {
 	}
 }
 
-func TestDeleteIndexFailureRollsBackTableTombstone(t *testing.T) {
+func TestDeleteRejectsClosedIndexBeforeChangingTable(t *testing.T) {
 	setupTableTest(t)
 	tbl, err := table.Create("rollback_delete", []string{"name"})
 	if err != nil {
@@ -273,8 +281,76 @@ func TestDeleteIndexFailureRollsBackTableTombstone(t *testing.T) {
 	if len(rows) != 2 || rows[1][0] != "0" || rows[1][1] != "kept" {
 		t.Fatalf("row after failed Delete = %q, want [0 kept]", rows)
 	}
+	if err := tbl.Pager.Close(); err != nil {
+		t.Fatalf("close stale pager: %v", err)
+	}
+	tbl, err = table.Open("rollback_delete")
+	if err != nil {
+		t.Fatalf("reopen after rejected Delete: %v", err)
+	}
 	if err := tbl.ValidatePrimaryIndex(); err != nil {
-		t.Fatalf("ValidatePrimaryIndex after rollback: %v", err)
+		t.Fatalf("ValidatePrimaryIndex after reopen: %v", err)
+	}
+}
+
+func TestConcurrentWritersOnSeparateHandlesSerializeAndRefresh(t *testing.T) {
+	setupTableTest(t)
+	first, err := table.Create("shared_writers", []string{"value"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	second, err := table.Open("shared_writers")
+	if err != nil {
+		_ = first.Close()
+		t.Fatalf("Open second handle: %v", err)
+	}
+	defer first.Close()
+	defer second.Close()
+
+	const insertsPerHandle = 50
+	var workers sync.WaitGroup
+	errCh := make(chan error, 2)
+	for handleID, tbl := range []*table.Table{first, second} {
+		workers.Add(1)
+		go func(handleID int, tbl *table.Table) {
+			defer workers.Done()
+			for i := 0; i < insertsPerHandle; i++ {
+				if err := tbl.Insert([]string{fmt.Sprintf("%d-%d", handleID, i)}); err != nil {
+					errCh <- err
+					return
+				}
+			}
+			errCh <- nil
+		}(handleID, tbl)
+	}
+	workers.Wait()
+	close(errCh)
+	for err := range errCh {
+		if err != nil {
+			t.Fatalf("concurrent insert: %v", err)
+		}
+	}
+
+	if err := first.Close(); err != nil {
+		t.Fatalf("close first handle: %v", err)
+	}
+	if err := second.Close(); err != nil {
+		t.Fatalf("close second handle: %v", err)
+	}
+	reopened, err := table.Open("shared_writers")
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer reopened.Close()
+	rows, err := reopened.Select([]string{"*"}, nil)
+	if err != nil {
+		t.Fatalf("Select: %v", err)
+	}
+	if got, want := len(rows)-1, 2*insertsPerHandle; got != want {
+		t.Fatalf("live rows = %d, want %d", got, want)
+	}
+	if err := reopened.ValidatePrimaryIndex(); err != nil {
+		t.Fatalf("ValidatePrimaryIndex: %v", err)
 	}
 }
 
