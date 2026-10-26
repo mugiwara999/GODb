@@ -208,7 +208,7 @@
 - Changes: removed the stale `Update` TODO and abandoned secondary-index stub; added a short explanation beside the existing two-pass scan.
 - Regression coverage: the existing row-relocation update test covers the behavior described by the removed TODO.
 - Verification: full `GOCACHE=/tmp/goDB-gocache go test ./...` and `git diff --check` passed.
-- Commit: pending.
+- Commit: `9799c27` (`Remove obsolete row mutation TODOs`).
 
 ## Prioritized backlog
 
