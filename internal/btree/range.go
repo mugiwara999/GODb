@@ -269,7 +269,11 @@ func (it *RangeRIDIterator) Next() (entry RangeRIDEntry, ok bool, err error) {
 			it.done = true
 			return RangeRIDEntry{}, false, nil
 		}
-		stored := it.leaf.GetRID(it.keyIndex)
+		stored, err := it.leaf.GetRID(it.keyIndex)
+		if err != nil {
+			it.done = true
+			return RangeRIDEntry{}, false, err
+		}
 		it.keyIndex++
 		it.key = key
 		if stored.slotID != PostingMarkerSlot {
@@ -305,7 +309,11 @@ func (it *RangeIterator) Next() (entry RangeEntry, ok bool, err error) {
 				it.done = true
 				return RangeEntry{}, false, nil
 			}
-			stored := it.leaf.GetRID(it.keyIndex)
+			stored, err := it.leaf.GetRID(it.keyIndex)
+			if err != nil {
+				it.done = true
+				return RangeEntry{}, false, err
+			}
 			it.keyIndex++
 			var rids []RID
 			if stored.slotID == PostingMarkerSlot {

@@ -102,8 +102,42 @@ func TestBTreeLeafSettersWriteLastPhysicalEntry(t *testing.T) {
 	if got != 99 {
 		t.Fatalf("last entry key = %d, want 99", got)
 	}
-	if got := page.GetRID(index); *got != wantRID {
-		t.Fatalf("last entry RID = %+v, want %+v", *got, wantRID)
+	gotRID, err := page.GetRID(index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if *gotRID != wantRID {
+		t.Fatalf("last entry RID = %+v, want %+v", *gotRID, wantRID)
+	}
+}
+
+func TestBTreeGetRIDValidatesPageAndIndex(t *testing.T) {
+	var nilPage *BTreePage
+	if _, err := nilPage.GetRID(0); err == nil {
+		t.Fatal("GetRID accepted a nil page")
+	}
+	tests := []struct {
+		name  string
+		page  *BTreePage
+		index int
+	}{
+		{name: "internal node", page: func() *BTreePage { p := &BTreePage{ID: 1}; InitInternalPage(p); p.SetNumKeys(1); return p }(), index: 0},
+		{name: "invalid node type", page: &BTreePage{ID: 2, Data: [PAGE_SIZE]byte{0xff}}, index: 0},
+		{name: "negative index", page: func() *BTreePage { p := &BTreePage{ID: 3}; InitLeafPage(p); p.SetNumKeys(1); return p }(), index: -1},
+		{name: "past count", page: func() *BTreePage { p := &BTreePage{ID: 4}; InitLeafPage(p); p.SetNumKeys(1); return p }(), index: 1},
+		{name: "maximum int", page: func() *BTreePage { p := &BTreePage{ID: 5}; InitLeafPage(p); p.SetNumKeys(1); return p }(), index: int(^uint(0) >> 1)},
+		{name: "corrupt count", page: func() *BTreePage { p := &BTreePage{ID: 6}; InitLeafPage(p); p.SetNumKeys(MaxKeysPerLeaf + 1); return p }(), index: 0},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			before := test.page.Data
+			if _, err := test.page.GetRID(test.index); err == nil {
+				t.Fatal("GetRID accepted malformed page or index")
+			}
+			if test.page.Data != before {
+				t.Fatal("failed GetRID mutated page")
+			}
+		})
 	}
 }
 
@@ -1008,7 +1042,10 @@ func TestValidateRejectsCorruptDuplicatePostingCycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	marker := leaf.GetRID(0)
+	marker, err := leaf.GetRID(0)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if marker.slotID != PostingMarkerSlot {
 		t.Fatalf("leaf RID slot = %d, want posting marker", marker.slotID)
 	}

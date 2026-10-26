@@ -834,7 +834,10 @@ func (ind *Index) Find(key uint64) (*RID, error) {
 		}
 
 		if midKey == key {
-			rid := leaf.GetRID(mid)
+			rid, err := leaf.GetRID(mid)
+			if err != nil {
+				return nil, err
+			}
 			if rid.slotID == PostingMarkerSlot {
 				rids, err := ind.readPostingRIDs(rid.pageID)
 				if err != nil {
@@ -875,7 +878,10 @@ func (ind *Index) InsertDuplicate(key uint64, pageID uint32, slotID uint16) erro
 		if leafKey != key {
 			continue
 		}
-		stored := leaf.GetRID(i)
+		stored, err := leaf.GetRID(i)
+		if err != nil {
+			return err
+		}
 		if stored.slotID != PostingMarkerSlot {
 			if sameRID(*stored, rid) {
 				return fmt.Errorf("key %d RID (%d,%d): %w", key, pageID, slotID, ErrDuplicateRID)
@@ -942,7 +948,10 @@ func (ind *Index) FindAll(key uint64) ([]RID, error) {
 		if leafKey != key {
 			continue
 		}
-		stored := leaf.GetRID(i)
+		stored, err := leaf.GetRID(i)
+		if err != nil {
+			return nil, err
+		}
 		if stored.slotID == PostingMarkerSlot {
 			return ind.readPostingRIDs(stored.pageID)
 		}
@@ -967,7 +976,10 @@ func (ind *Index) CountAll(key uint64) (uint64, error) {
 		if leafKey != key {
 			continue
 		}
-		stored := leaf.GetRID(i)
+		stored, err := leaf.GetRID(i)
+		if err != nil {
+			return 0, err
+		}
 		if stored.slotID != PostingMarkerSlot {
 			return 1, nil
 		}
@@ -1022,7 +1034,10 @@ func (ind *Index) DeleteRID(key uint64, pageID uint32, slotID uint16) error {
 		if leafKey != key {
 			continue
 		}
-		stored := leaf.GetRID(i)
+		stored, err := leaf.GetRID(i)
+		if err != nil {
+			return err
+		}
 		if stored.slotID != PostingMarkerSlot {
 			if !sameRID(*stored, RID{pageID: pageID, slotID: slotID}) {
 				return fmt.Errorf("key %d RID (%d,%d): %w", key, pageID, slotID, ErrKeyNotFound)
@@ -1165,7 +1180,11 @@ func (ind *Index) UpdateRID(key uint64, pageID uint32, slotID uint16) error {
 		if leafKey != key {
 			continue
 		}
-		if leaf.GetRID(i).slotID == PostingMarkerSlot {
+		stored, err := leaf.GetRID(i)
+		if err != nil {
+			return err
+		}
+		if stored.slotID == PostingMarkerSlot {
 			return fmt.Errorf("key %d has multiple RIDs; update the intended RID with DeleteRID and InsertDuplicate", key)
 		}
 		if err := leaf.SetRID(i, RID{pageID: pageID, slotID: slotID}); err != nil {
@@ -1197,7 +1216,9 @@ func (ind *Index) Delete(key uint64) error {
 			continue
 		}
 		var postingPages []*BTreePage
-		if rid := leaf.GetRID(i); rid.slotID == PostingMarkerSlot {
+		if rid, err := leaf.GetRID(i); err != nil {
+			return err
+		} else if rid.slotID == PostingMarkerSlot {
 			postingPages, _, err = ind.readPostingChain(rid.pageID)
 			if err != nil {
 				return fmt.Errorf("read posting chain for key %d: %w", key, err)
@@ -1339,7 +1360,10 @@ func (ind *Index) rebalanceLeaf(leaf *BTreePage) error {
 			if err != nil {
 				return err
 			}
-			rid := left.GetRID(last)
+			rid, err := left.GetRID(last)
+			if err != nil {
+				return err
+			}
 			removeLeafEntry(left, last)
 			leaf.InsertIntoLeafAt(0, key, *rid, leafCount)
 			leaf.SetNumKeys(uint16(leafCount + 1))
@@ -1362,7 +1386,10 @@ func (ind *Index) rebalanceLeaf(leaf *BTreePage) error {
 			if err != nil {
 				return err
 			}
-			rid := right.GetRID(0)
+			rid, err := right.GetRID(0)
+			if err != nil {
+				return err
+			}
 			leaf.InsertIntoLeafAt(leafCount, key, *rid, leafCount)
 			leaf.SetNumKeys(uint16(leafCount + 1))
 			removeLeafEntry(right, 0)
@@ -1971,7 +1998,10 @@ func (ind *Index) validateNode(node *BTreePage, minKey, maxKey uint64, level int
 					return fmt.Errorf("keys in leaf node %d are not sorted: %d <= %d", node.ID, key, prevKey)
 				}
 			}
-			rid := node.GetRID(i)
+			rid, err := node.GetRID(i)
+			if err != nil {
+				return err
+			}
 			if rid.slotID == PostingMarkerSlot {
 				postingPages, _, err := ind.readPostingChain(rid.pageID)
 				if err != nil {

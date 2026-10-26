@@ -51,7 +51,10 @@ func (t *Table) validatePrimaryIndex() error {
 			if err != nil {
 				return fmt.Errorf("validate primary index for table %q: read key from leaf %d: %w", t.Name, leaf.ID, err)
 			}
-			rid := leaf.GetRID(i)
+			rid, err := leaf.GetRID(i)
+			if err != nil {
+				return fmt.Errorf("validate primary index for table %q: read RID from leaf %d: %w", t.Name, leaf.ID, err)
+			}
 			location := rowLocation{pageID: int(rid.GetPageID()), slotID: int(rid.GetSlotID())}
 			if previous, exists := entries[key]; exists {
 				return fmt.Errorf("validate primary index for table %q: duplicate key %d at (%d,%d) and (%d,%d)", t.Name, key, previous.pageID, previous.slotID, location.pageID, location.slotID)

@@ -79,7 +79,10 @@ func TestSecondaryIndexErrorRollsBackTableMutation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	marker := leaf.GetRID(0)
+	marker, err := leaf.GetRID(0)
+	if err != nil {
+		t.Fatal(err)
+	}
 	posting, err := secondary.GetPage(marker.GetPageID())
 	if err != nil {
 		t.Fatal(err)
@@ -315,7 +318,10 @@ func TestIndexedRangeSelectRejectsDuplicatePostingRID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	marker := leaf.GetRID(0)
+	marker, err := leaf.GetRID(0)
+	if err != nil {
+		t.Fatal(err)
+	}
 	posting, err := secondary.GetPage(marker.GetPageID())
 	if err != nil {
 		t.Fatal(err)

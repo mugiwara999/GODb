@@ -157,7 +157,10 @@ func SearchLeafPage(p *BTreePage, key uint64) (*RID, bool, error) {
 
 		if val == key {
 
-			id := p.GetRID(mid)
+			id, err := p.GetRID(mid)
+			if err != nil {
+				return nil, false, err
+			}
 			return id, true, nil
 		} else if val < key {
 			low = mid + 1
@@ -196,7 +199,20 @@ func (b *BTreePage) GetKey(i int) (uint64, error) {
 	return binary.LittleEndian.Uint64(b.Data[offset : offset+LeafKeyOffset]), nil
 }
 
-func (b *BTreePage) GetRID(i int) *RID {
+func (b *BTreePage) GetRID(i int) (*RID, error) {
+	if b == nil {
+		return nil, fmt.Errorf("get RID: nil page")
+	}
+	if b.NodeType() != LeafNode {
+		return nil, fmt.Errorf("get RID from page %d: expected leaf node, got %d", b.ID, b.NodeType())
+	}
+	numKeys := b.GetNumKeys()
+	if numKeys > MaxKeysPerLeaf {
+		return nil, fmt.Errorf("get RID from page %d: corrupt key count %d", b.ID, numKeys)
+	}
+	if i < 0 || i >= numKeys {
+		return nil, fmt.Errorf("get RID %d from page %d: index out of range [0, %d)", i, b.ID, numKeys)
+	}
 
 	offset := LeafHeaderSize + i*LeafEntrySize
 
@@ -206,7 +222,7 @@ func (b *BTreePage) GetRID(i int) *RID {
 	return &RID{
 		pageID: pageID,
 		slotID: slotID,
-	}
+	}, nil
 
 }
 
