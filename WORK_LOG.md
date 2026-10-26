@@ -376,7 +376,7 @@
 - Benchmark comparison on Linux/amd64, 13th Gen Intel Core i5-13500H, `-benchtime=200ms -count=2 -cpu=1`: narrow scan 1.40–1.44 ms/op, 667 KB/op; indexed candidate path 0.205–0.211 ms/op, 210 KB/op. Broad scan 63.1–63.3 ms/op, 43.9 MB/op; indexed path 61.8–62.9 ms/op, 44.4 MB/op. Narrow indexed updates were about 7x faster and allocated about 69% less; broad ranges were similar in time and used about 0.5 MB more allocations.
 - Verification: full tests, build, vet, race tests for table/pager/B+ tree/WAL/parser/lexer/CLI, Windows and Solaris cross-builds, corrected narrow/broad benchmark, and `git diff --check` passed.
 - Limitations: the indexed path validates each candidate but relies on secondary-index completeness, which normal table mutations maintain and `ValidateIndexes` can check; broad ranges retain a small memory overhead. Native Windows/Solaris durability behavior remains unverified.
-- Commit: pending.
+- Commit: `3fc6ccc` (`Use range indexes for mutations`).
 
 ## Prioritized backlog
 
