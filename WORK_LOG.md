@@ -559,7 +559,7 @@
 - Changes: added `FuzzBTreePageAccessorsDoNotPanic` with valid leaf/internal/posting seeds and a corrupt-count seed. It probes page reads and writes with arbitrary serialized bytes and indexes.
 - Verification: the seed corpus passed; a 10-second fuzz run completed 798,135 executions without a panic. Full tests, build, vet, Windows/Solaris test-binary cross-target checks, and `git diff --check` passed. Hosted run `40275418207` passed for the preceding checked-count commit.
 - Limitations: this target exercises page-level accessors, not cross-page index graph corruption or on-disk recovery. Native Solaris runtime coverage remains unavailable; hosted CI for this fuzz change will run after push.
-- Commit: pending.
+- Commit: `7dcf560` (`Fuzz B-tree page accessors`).
 
 ## Prioritized backlog
 
@@ -570,4 +570,4 @@
 
 ## Next action
 
-Next task: finish recording and committing the page-accessor fuzz target, then assess bounded fuzzing of small cross-page index graphs. Count setters are committed at `c4c5612`; leaf/posting links at `dca4a37`; parent pointers at `35a6a0c`; checked key-count reads at `b1ea467`. Hosted run `40273870120` passed Ubuntu and Windows for `35a6a0c`; CI for `b1ea467` is pending. Preserve the supplied untracked `AGENTS.md`. Separately continue seeking a usable Solaris/illumos runtime; Windows native storage tests pass in hosted CI.
+Next task: assess bounded fuzzing of small cross-page index graphs. Count setters are committed at `c4c5612`; leaf/posting links at `dca4a37`; parent pointers at `35a6a0c`; checked key-count reads at `b1ea467`; page accessor fuzzing at `7dcf560`. Hosted run `40275418207` passed for `b1ea467`; CI for `7dcf560` is pending. Preserve the supplied untracked `AGENTS.md`. Separately continue seeking a usable Solaris/illumos runtime; Windows native storage tests pass in hosted CI.
