@@ -487,6 +487,7 @@
 - Regression coverage: nil page; leaf and invalid node types; past-count and MaxUint32 indexes; corrupt count; unchanged page bytes on failure; valid leftmost and right-child round trips.
 - Verification: full tests/build/vet, B-tree/table race tests, and Windows/Solaris package cross-target checks passed.
 - Limitations: native Solaris runtime coverage remains unavailable.
+- Commit: `31158be` (`Bounds-check B-tree child reads`).
 
 ## Prioritized backlog
 
