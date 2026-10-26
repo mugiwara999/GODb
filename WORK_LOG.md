@@ -405,7 +405,7 @@
 - Verification: full tests, build, vet, race tests for table/pager/B+ tree/WAL/parser/lexer/CLI, Windows and Solaris cross-builds, duplicate-posting benchmark, and `git diff --check` passed.
 - Benchmark on Linux/amd64, 13th Gen Intel Core i5-13500H: B+ tree iteration over 10,000 duplicate RIDs improved allocation from 872 KB/op (batch) to 514 KB/op (stream), about 41% less; time was similar (batch 1.55–1.67 ms/op, stream 1.49–1.70 ms/op). Table SELECT over 1,024 duplicate rows measured about 0.60 ms/op and 319 KB/op on both baseline and streamed paths; the projected rows dominate allocation at this size.
 - Limitations: the per-key duplicate-check set still grows with the posting chain, so memory is reduced rather than strictly bounded. Removing exact validation would risk duplicate rows from corrupted indexes.
-- Commit: pending.
+- Commit: `c03a50f` (`Stream indexed range selection`).
 
 ## Prioritized backlog
 
