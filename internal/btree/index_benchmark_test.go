@@ -50,52 +50,57 @@ func BenchmarkIndexFind(b *testing.B) {
 }
 
 func BenchmarkIndexRangeDuplicateRIDs(b *testing.B) {
-	for _, streaming := range []bool{false, true} {
-		name := "batch"
-		if streaming {
-			name = "stream"
+	for _, totalRIDs := range []int{10000, 100000} {
+		size := "10k"
+		if totalRIDs == 100000 {
+			size = "100k"
 		}
-		b.Run(name, func(b *testing.B) {
-			const totalRIDs = 10000
-			idx := benchmarkDuplicateIndex(b, totalRIDs)
-			lower, upper := uint64(7), uint64(7)
-			b.ReportAllocs()
-			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
-				count := 0
-				if streaming {
-					it, err := idx.RangeRIDIterator(&lower, true, &upper, true)
-					if err != nil {
-						b.Fatal(err)
-					}
-					for {
-						_, ok, err := it.Next()
+		for _, streaming := range []bool{false, true} {
+			name := "batch"
+			if streaming {
+				name = "stream"
+			}
+			b.Run(size+"/"+name, func(b *testing.B) {
+				idx := benchmarkDuplicateIndex(b, totalRIDs)
+				lower, upper := uint64(7), uint64(7)
+				b.ReportAllocs()
+				b.ResetTimer()
+				for i := 0; i < b.N; i++ {
+					count := 0
+					if streaming {
+						it, err := idx.RangeRIDIterator(&lower, true, &upper, true)
 						if err != nil {
 							b.Fatal(err)
 						}
-						if !ok {
-							break
+						for {
+							_, ok, err := it.Next()
+							if err != nil {
+								b.Fatal(err)
+							}
+							if !ok {
+								break
+							}
+							count++
 						}
-						count++
+					} else {
+						it, err := idx.RangeIterator(&lower, true, &upper, true)
+						if err != nil {
+							b.Fatal(err)
+						}
+						entry, ok, err := it.Next()
+						if err != nil {
+							b.Fatal(err)
+						}
+						if ok {
+							count = len(entry.RIDs)
+						}
 					}
-				} else {
-					it, err := idx.RangeIterator(&lower, true, &upper, true)
-					if err != nil {
-						b.Fatal(err)
-					}
-					entry, ok, err := it.Next()
-					if err != nil {
-						b.Fatal(err)
-					}
-					if ok {
-						count = len(entry.RIDs)
+					if count != totalRIDs {
+						b.Fatalf("range returned %d RIDs, want %d", count, totalRIDs)
 					}
 				}
-				if count != totalRIDs {
-					b.Fatalf("range returned %d RIDs, want %d", count, totalRIDs)
-				}
-			}
-		})
+			})
+		}
 	}
 }
 
@@ -122,7 +127,7 @@ func benchmarkDuplicateIndex(b *testing.B, totalRIDs int) *Index {
 		page.SetPostingCount(uint16(count))
 		for i := 0; i < count; i++ {
 			n := offset + i
-			page.SetPostingRID(i, RID{pageID: uint32(n + 10), slotID: uint16(n % MaxRIDsPerPosting)})
+			page.SetPostingRID(i, RID{pageID: uint32(n/256 + 10), slotID: uint16(n % 256)})
 		}
 		if err := idx.WritePage(page); err != nil {
 			b.Fatal(err)
