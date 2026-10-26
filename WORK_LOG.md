@@ -331,7 +331,7 @@
 - Benchmark evidence on Linux/amd64, 13th Gen Intel Core i5-13500H, `-benchtime=100ms -cpu=1`: after planning both filter orders measured about 55 µs/op and 121 KB/op. Broad-first improved from 1.47 ms / 664 KB; selective-first changed from 46 µs / 86 KB. These short runs are directional.
 - Verification: full tests, build, vet, race tests for table/pager/B+ tree/WAL/CLI, Windows and Solaris cross-builds, benchmark run, and `git diff --check` passed. An initial verification caught a test assertion comparing `uint64` with `int`; the assertion was corrected and the full checks rerun successfully.
 - Limitations: candidate counts require traversing each posting chain, so multi-index planning has additional index I/O; the shortest list is selected by RID count, without accounting for row-page locality.
-- Commit: pending.
+- Commit: `5b7937b` (`Choose selective index for equality filters`).
 
 ## Prioritized backlog
 
