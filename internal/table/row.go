@@ -236,6 +236,9 @@ func (t *Table) Select(columns []string, colEquals []ColEq) ([][]string, error) 
 	}
 	t.mutationMu.Lock()
 	defer t.mutationMu.Unlock()
+	if t.closed {
+		return nil, fmt.Errorf("select from table %q: %w", t.Name, ErrTableClosed)
+	}
 	if t.poisoned {
 		return nil, fmt.Errorf("select from table %q: table must be reopened after a failed rollback", t.Name)
 	}

@@ -300,12 +300,26 @@
 - Limitations: SELECT remains exclusive and readers serialize. Benchmark setup is excluded from operation timing; environment and 100 ms sample durations limit precision.
 - Commit: `f688ab6` (`Cache pages during indexed selects`).
 
+### Serialize table close with API operations
+
+- Priority: resource and concurrency correctness. `Table.Close` bypassed the mutex used by SELECT, mutations, index DDL, and validators, so closing a table concurrently could race with file I/O and partially close owned handles. Repeated close also returned descriptor-closed errors.
+- Changes: `Close` now waits on the table operation mutex, closes the pager and every index while collecting errors, and becomes idempotent. Added `ErrTableClosed` checks to operations and validators so calls queued after close return a stable error.
+- Regression coverage: race a SELECT and `ValidateIndexes` against `Close`; either the operation completes first or reports `ErrTableClosed`. Verify repeated close and post-close API behavior.
+- Verification: targeted test repeated 100 times and under race detection 25 times; full tests, build, vet, race tests for table/WAL/B+ tree/pager, Windows and Solaris cross-builds, and `git diff --check` passed.
+- Limitations: callers using the publicly exposed `Table.Pager` directly remain responsible for synchronizing that access with `Close`.
+- Commit: pending.
+
+### Shared-read-lock assessment
+
+- Finding: changing the OS lock from exclusive to shared is not sufficient. Every SELECT runs WAL recovery and refreshes pager/index metadata and the index map. Recovery can write files, while refresh mutates state shared by queries; allowing concurrent readers without changing this lifecycle would introduce races or read partially recovered state.
+- Direction: a safe shared-read design likely needs a durable table generation/read epoch plus a distinct recovery path for a pending WAL, or immutable per-query state. Benchmarking confirms lock contention but does not justify weakening storage consistency before that foundation exists.
+
 ## Prioritized backlog
 
 1. **Run storage durability tests on Windows and Solaris.** Creation, WAL, table/index lifecycle, and directory sync have runtime verification only on Linux; this host has no Windows/Solaris runtime or guest images. Solaris uses a process-local lock fallback. Dependencies: native or emulated test environments. Risks: directory-sync, rename, unlink, and lock behavior differs; cross-builds and injected Linux failures do not prove power-loss guarantees. Acceptance: run table/index creation and removal, interrupted-create recovery, WAL begin/rollback/recovery, and lock tests on each OS; document unsupported semantics or return clear errors if required primitives fail. Tests needed: native runtime coverage of those paths on Windows and Solaris.
 2. **Design TEXT secondary-key encoding.** Current index pages and posting APIs accept `uint64`; converting arbitrary text with a hash would introduce collisions and ordering surprises. Choose an exact encoding or a separate key representation before text index support. Acceptance: exact equality semantics without collision-based false positives, documented ordering, and tested persistence compatibility. Tests needed: empty/long text, Unicode byte sequences, collision cases if hashing is used, reopen, and duplicate postings.
-3. **Evaluate shared read locking.** SELECT now refreshes catalog and WAL state under an exclusive table lock, which guarantees coherent queries but serializes readers. New benchmarks show query and parallel-reader baselines; a shared-lock design must still coordinate recovery, handle refresh, and local pager/index state. Acceptance: concurrent reads can overlap safely while cooperating writers remain excluded and all existing-handle refresh semantics hold. Tests/benchmarks needed: process-level readers and writers, race tests, crash-recovery interaction, and before/after parallel query throughput.
+3. **Design a durable read epoch before shared read locking.** SELECT recovery and refresh currently mutate WAL, pager, and index state under an exclusive lock. A shared-lock change alone is unsafe. Dependencies: define a persisted generation or immutable read-state design and a way for readers to detect pending recovery. Acceptance: concurrent reads overlap while writers/recovery remain excluded, stale handles refresh safely, and readers never observe partially recovered state. Tests/benchmarks needed: process-level readers and writers, race tests, crash-recovery interaction, and before/after parallel query throughput.
 
 ## Next action
 
-Next task: assess a shared-read-lock design against the new benchmark baseline, including recovery and refresh coordination risks, before changing lock semantics. Continue seeking a Windows/Solaris runtime for durability tests. Preserve the supplied untracked `AGENTS.md`.
+Next task: develop and compare durable read-epoch designs (persisted generation versus immutable per-query state), including WAL recovery and old-handle refresh, before changing lock semantics. Continue seeking a Windows/Solaris runtime for durability tests. Preserve the supplied untracked `AGENTS.md`.

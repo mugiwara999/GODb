@@ -24,6 +24,9 @@ func (t *Table) CreateIndex(column string) error {
 	}
 	t.mutationMu.Lock()
 	defer t.mutationMu.Unlock()
+	if t.closed {
+		return fmt.Errorf("create index on table %q: %w", t.Name, ErrTableClosed)
+	}
 	if t.poisoned {
 		return fmt.Errorf("create index on table %q: table must be reopened after a failed rollback", t.Name)
 	}
@@ -179,6 +182,9 @@ func (t *Table) dropIndex(column string, removeFile func(string) error, syncDir 
 	}
 	t.mutationMu.Lock()
 	defer t.mutationMu.Unlock()
+	if t.closed {
+		return fmt.Errorf("drop index on table %q: %w", t.Name, ErrTableClosed)
+	}
 	if t.poisoned {
 		return fmt.Errorf("drop index on table %q: table must be reopened after a failed rollback", t.Name)
 	}

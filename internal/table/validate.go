@@ -14,6 +14,15 @@ func (t *Table) ValidatePrimaryIndex() error {
 	if t == nil || t.Pager == nil {
 		return fmt.Errorf("validate primary index: table is not open")
 	}
+	t.mutationMu.Lock()
+	defer t.mutationMu.Unlock()
+	if t.closed {
+		return fmt.Errorf("validate primary index for table %q: %w", t.Name, ErrTableClosed)
+	}
+	return t.validatePrimaryIndex()
+}
+
+func (t *Table) validatePrimaryIndex() error {
 	index := t.Indexes["id"]
 	if index == nil {
 		return fmt.Errorf("validate primary index for table %q: missing primary key index", t.Name)
@@ -109,7 +118,15 @@ func (t *Table) ValidatePrimaryIndex() error {
 // ValidateIndexes checks each open secondary UINT64 index against the live
 // rows, including both missing and stale key/RID associations.
 func (t *Table) ValidateIndexes() error {
-	if err := t.ValidatePrimaryIndex(); err != nil {
+	if t == nil || t.Pager == nil {
+		return fmt.Errorf("validate indexes: table is not open")
+	}
+	t.mutationMu.Lock()
+	defer t.mutationMu.Unlock()
+	if t.closed {
+		return fmt.Errorf("validate indexes for table %q: %w", t.Name, ErrTableClosed)
+	}
+	if err := t.validatePrimaryIndex(); err != nil {
 		return err
 	}
 	type rowLocation struct {

@@ -29,6 +29,7 @@ type Table struct {
 	lastID      uint64
 	mutationMu  sync.Mutex
 	poisoned    bool
+	closed      bool
 }
 
 type ColumnType = pager.ColumnType
@@ -46,6 +47,7 @@ type Column struct {
 var (
 	ErrorTakingInput = errors.New("read user input")
 	ErrTableExists   = errors.New("table already exists")
+	ErrTableClosed   = errors.New("table is closed")
 )
 
 var createMarkerMagic = []byte("GODBCREATE1\n")
@@ -159,6 +161,9 @@ func openTable(name, path string) (*Table, error) {
 func (t *Table) mutate(fn func() error) error {
 	t.mutationMu.Lock()
 	defer t.mutationMu.Unlock()
+	if t.closed {
+		return fmt.Errorf("mutate table %q: %w", t.Name, ErrTableClosed)
+	}
 	if t.poisoned {
 		return fmt.Errorf("mutate table %q: table must be reopened after a failed rollback", t.Name)
 	}
@@ -554,27 +559,30 @@ func syncDirectory(path string) error {
 }
 
 func (t *Table) Close() error {
-	if t == nil || t.Pager == nil {
+	if t == nil {
 		return nil
 	}
-	err := t.Pager.Close()
-
-	if err != nil {
-		return fmt.Errorf("close table %q: %w", t.Name, err)
+	t.mutationMu.Lock()
+	defer t.mutationMu.Unlock()
+	if t.closed || t.Pager == nil {
+		return nil
 	}
-
+	var closeErrs []error
+	if err := t.Pager.Close(); err != nil {
+		closeErrs = append(closeErrs, fmt.Errorf("close table %q: %w", t.Name, err))
+	}
 	for _, idx := range t.Indexes {
 		if err := idx.Close(); err != nil {
 			name, err := idx.Name()
 			if err != nil {
-				return fmt.Errorf("close index: %w", err)
+				closeErrs = append(closeErrs, fmt.Errorf("close index: %w", err))
+				continue
 			}
-			return fmt.Errorf("close index %q: %w", name, err)
+			closeErrs = append(closeErrs, fmt.Errorf("close index %q: %w", name, err))
 		}
 	}
-
-	return nil
-
+	t.closed = true
+	return errors.Join(closeErrs...)
 }
 
 func (t *Table) GetColumns() []string {

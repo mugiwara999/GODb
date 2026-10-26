@@ -486,6 +486,62 @@ func TestDropSecondaryIndexRefreshesOlderHandlesAndFallsBackToScan(t *testing.T)
 	}
 }
 
+func TestCloseSerializesWithSelectAndIsIdempotent(t *testing.T) {
+	setupTableTest(t)
+	tbl, err := table.Create("close_concurrent", []string{"value"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = tbl.Close() })
+	if err := tbl.Insert([]string{"kept"}); err != nil {
+		t.Fatal(err)
+	}
+
+	start := make(chan struct{})
+	selectErr := make(chan error, 1)
+	validateErr := make(chan error, 1)
+	closeErr := make(chan error, 1)
+	go func() {
+		<-start
+		rows, err := tbl.Select([]string{"value"}, nil)
+		if err == nil && (len(rows) != 2 || rows[1][0] != "kept") {
+			selectErr <- fmt.Errorf("Select returned %q", rows)
+			return
+		}
+		selectErr <- err
+	}()
+	go func() {
+		<-start
+		validateErr <- tbl.ValidateIndexes()
+	}()
+	go func() {
+		<-start
+		closeErr <- tbl.Close()
+	}()
+	close(start)
+	if err := <-closeErr; err != nil {
+		t.Fatalf("concurrent Close: %v", err)
+	}
+	if err := <-selectErr; err != nil && !errors.Is(err, table.ErrTableClosed) {
+		t.Fatalf("concurrent Select error = %v, want success or ErrTableClosed", err)
+	}
+	if err := <-validateErr; err != nil && !errors.Is(err, table.ErrTableClosed) {
+		t.Fatalf("concurrent ValidateIndexes error = %v, want success or ErrTableClosed", err)
+	}
+	if err := tbl.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+	if err := tbl.Insert([]string{"after close"}); !errors.Is(err, table.ErrTableClosed) {
+		t.Fatalf("Insert after Close error = %v, want ErrTableClosed", err)
+	}
+	if _, err := tbl.Select([]string{"*"}, nil); !errors.Is(err, table.ErrTableClosed) {
+		t.Fatalf("Select after Close error = %v, want ErrTableClosed", err)
+	}
+	if err := tbl.ValidateIndexes(); !errors.Is(err, table.ErrTableClosed) {
+		t.Fatalf("ValidateIndexes after Close error = %v, want ErrTableClosed", err)
+	}
+}
+
 func TestRejectedInsertDoesNotConsumeIDOrAllocatePage(t *testing.T) {
 	setupTableTest(t)
 
