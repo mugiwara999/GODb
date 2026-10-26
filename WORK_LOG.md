@@ -524,7 +524,7 @@
 - Regression coverage: invalid node types, nil receivers, over-capacity counts, no mutation after failure, and valid leaf/internal/posting capacity boundaries.
 - Verification: focused B-tree/table tests and full tests/build/vet passed. B-tree/table race tests passed. Windows and Solaris package test binaries cross-compiled with `CGO_ENABLED=0` and were exercised with `go test -exec=true`. Hosted run `40268748666` passed Ubuntu and Windows tests/build/vet.
 - Limitations: native Solaris runtime coverage remains unavailable. Remaining fixed-offset posting getters/setters and other direct page field accessors still need review.
-- Commit: pending.
+- Commit: `c4c5612` (`Validate B-tree page count setters`).
 
 ## Prioritized backlog
 
@@ -535,4 +535,4 @@
 
 ## Next action
 
-Next task: finish verification and commit the validated count setters, then audit `PostingCount`, `NextPostingPage`, `SetNextPostingPage`, and other direct fixed-offset B-tree accessors. Current code was based on HEAD `22306f6`; hosted run `40268748666` passed on Ubuntu and Windows. Preserve the supplied untracked `AGENTS.md`. Separately continue seeking a usable Solaris/illumos runtime; Windows native storage tests pass in hosted CI.
+Next task: audit `PostingCount`, `NextPostingPage`, `SetNextPostingPage`, and other direct fixed-offset B-tree accessors. Validated count setters are committed at `c4c5612`; hosted run `40268748666` passed on the preceding checkpoint (`22306f6`). Preserve the supplied untracked `AGENTS.md`. Separately continue seeking a usable Solaris/illumos runtime; Windows native storage tests pass in hosted CI.
