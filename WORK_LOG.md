@@ -106,6 +106,7 @@
 - Verification: baseline `GOCACHE=/tmp/goDB-gocache go test ./...` passed before implementation. Final `GOCACHE=/tmp/goDB-gocache go test ./...`, `go build ./...`, `go vet ./...`, `go test -race ./internal/wal ./internal/table`, and `git diff --check` passed.
 - Limitations: journaling covers mutations to existing tables; initial table/index creation and schema changes are not transactional. Concurrency is serialized only within one `Table` handle, not across multiple handles or processes. Tests exercise representative failures and crash recovery, not injected faults at every individual write/fsync boundary. Recovery intentionally leaves malformed or out-of-directory journals untouched and reports an error.
 - Commit: `a306ea7` (`Add undo journal for table mutations`).
+- Follow-up recovery test: `8ee6105` (`Test recovery from torn WAL commit`) confirms that a commit frame missing its final byte is treated as uncommitted and restores the original page. `go test ./internal/wal ./internal/table`, full `go test ./...`, and `git diff --check` passed afterward.
 
 ### Tighten SQL syntax parsing and document the supported subset
 
