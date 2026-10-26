@@ -442,7 +442,7 @@
 - Regression coverage: nil receivers; wrong node types and invalid type tags; failure leaves page bytes unchanged; valid leaf-link and internal-leftmost-child round trips.
 - Verification: targeted B+ tree tests passed; full `GOCACHE=/tmp/goDB-gocache go test ./... -count=1`, build, vet, and `git diff --check` passed. `go test -race ./internal/btree ./internal/table -count=1` passed. Windows and Solaris test binaries for all packages cross-compiled with `CGO_ENABLED=0`.
 - Limitations: `GetKey`, `GetRID`, and `GetChild` still trust caller indexes and node layouts; continue the page accessor audit.
-- Commit: to be recorded after commit.
+- Commit: `92bfb1d` (`Guard B-tree pointer setters`).
 
 ## Prioritized backlog
 
