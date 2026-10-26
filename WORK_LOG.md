@@ -262,7 +262,7 @@
 - Regression coverage: parser accepts the statement and rejects missing columns, extra indexed columns, misplaced names, and trailing tokens; CLI test creates the index over duplicate values then runs indexed equality queries through subsequent updates and reopen.
 - Verification: targeted parser/CLI tests, full suite/build/vet, table/B+ tree/WAL race tests, Windows and Solaris cross-builds, and `git diff --check` passed.
 - Limitations: index files are still the only record that a secondary index exists; missing files cause scan fallback. Durable index catalog semantics remain the next task.
-- Commit: pending.
+- Commit: `c1c689e` (`Add SQL secondary index creation`).
 
 ## Prioritized backlog
 
