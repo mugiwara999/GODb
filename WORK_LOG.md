@@ -280,7 +280,7 @@
 - Regression coverage: create/drop/reopen and scan fallback; old handle reads and writes after drop; primary and absent-index rejection; parser/CLI DDL; existing closed-index recovery behavior; catalog and table consistency.
 - Verification: full `GOCACHE=/tmp/goDB-gocache go test ./...`, build, vet, race tests for pager/B+ tree/WAL/table/parser/CLI, Windows and Solaris cross-builds, and `git diff --check` passed.
 - Limitations: SELECT uses an exclusive table lock, so readers serialize with each other as well as writers. Direct pager access and `ValidateIndexes` do not acquire that lock. Native Windows/Solaris runtime behavior remains unverified.
-- Commit: pending.
+- Commit: `c1bf366` (`Add SQL secondary index removal`).
 
 ## Prioritized backlog
 
