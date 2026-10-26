@@ -349,7 +349,7 @@
 - Regression coverage: lexer tokenization; parser range query, malformed bounds, and rejection in UPDATE/DELETE; command-loop scan and indexed range queries with equality filters.
 - Verification: full tests, build, vet, race tests for table/pager/B+ tree/WAL/parser/lexer/CLI, Windows and Solaris cross-builds, and `git diff --check` passed. Initial parser verification found equality-only queries represented an empty nonnil range slice; this was corrected to preserve existing parse output and all checks were rerun.
 - Limitations: SQL supports one ranged column per SELECT; range predicates are not yet supported in UPDATE or DELETE.
-- Commit: pending.
+- Commit: `92501a7` (`Add SQL SELECT range predicates`).
 
 ## Prioritized backlog
 
