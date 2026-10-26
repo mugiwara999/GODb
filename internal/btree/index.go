@@ -415,8 +415,12 @@ func (ind *Index) SplitLeafPage(p *BTreePage) (newPage *BTreePage, ascendKey uin
 
 	p.moveHalfKeysToLeaf(newPage)
 
-	newPage.SetNextLeaf(p.NextLeaf())
-	p.SetNextLeaf(newPage.ID)
+	if err := newPage.SetNextLeaf(p.NextLeaf()); err != nil {
+		return nil, 0, err
+	}
+	if err := p.SetNextLeaf(newPage.ID); err != nil {
+		return nil, 0, err
+	}
 
 	newPage.SetParentID(p.GetParentID())
 
@@ -543,7 +547,9 @@ func (ind *Index) CreateNewRoot(oldRoot *BTreePage, ascendKey uint64, newPage *B
 		return nil, err
 	}
 
-	newRoot.SetLeftmostChild(oldRoot.ID)
+	if err := newRoot.SetLeftmostChild(oldRoot.ID); err != nil {
+		return nil, err
+	}
 	newRoot.InsertIntoInternalAt(0, ascendKey, newPage.ID, 0)
 	newRoot.IncrementNumKeys()
 
@@ -625,7 +631,10 @@ func (ind *Index) SplitInternalPage(p *BTreePage) (ascendKey uint64, newPage *BT
 		return 0, nil, err
 	}
 
-	ascendKey = p.moveHalfKeysToInternal(newPage)
+	ascendKey, err = p.moveHalfKeysToInternal(newPage)
+	if err != nil {
+		return 0, nil, err
+	}
 
 	newPage.SetParentID(p.GetParentID())
 
@@ -1203,7 +1212,9 @@ func writeInternal(p *BTreePage, children []uint32, keys []uint64) error {
 		return fmt.Errorf("invalid internal node contents: %d children, %d keys", len(children), len(keys))
 	}
 	clear(p.Data[InternalHeaderSize:])
-	p.SetLeftmostChild(children[0])
+	if err := p.SetLeftmostChild(children[0]); err != nil {
+		return err
+	}
 	for i, key := range keys {
 		offset := InternalHeaderSize + i*InternalEntrySize
 		binary.LittleEndian.PutUint64(p.Data[offset:offset+8], key)
@@ -1315,7 +1326,9 @@ func (ind *Index) rebalanceLeaf(leaf *BTreePage) error {
 		leftCount := left.GetNumKeys()
 		copy(left.Data[LeafHeaderSize+leftCount*LeafEntrySize:], leaf.Data[LeafHeaderSize:LeafHeaderSize+leafCount*LeafEntrySize])
 		left.SetNumKeys(uint16(leftCount + leafCount))
-		left.SetNextLeaf(leaf.NextLeaf())
+		if err := left.SetNextLeaf(leaf.NextLeaf()); err != nil {
+			return err
+		}
 		children, keys = removeChild(children, keys, pos)
 		if err := writeInternal(parent, children, keys); err != nil {
 			return err
@@ -1339,7 +1352,9 @@ func (ind *Index) rebalanceLeaf(leaf *BTreePage) error {
 	rightCount := right.GetNumKeys()
 	copy(leaf.Data[LeafHeaderSize+leafCount*LeafEntrySize:], right.Data[LeafHeaderSize:LeafHeaderSize+rightCount*LeafEntrySize])
 	leaf.SetNumKeys(uint16(leafCount + rightCount))
-	leaf.SetNextLeaf(right.NextLeaf())
+	if err := leaf.SetNextLeaf(right.NextLeaf()); err != nil {
+		return err
+	}
 	children, keys = removeChild(children, keys, pos+1)
 	if err := writeInternal(parent, children, keys); err != nil {
 		return err

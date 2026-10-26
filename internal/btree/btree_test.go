@@ -102,6 +102,64 @@ func TestBTreeLeafSettersWriteLastPhysicalEntry(t *testing.T) {
 	}
 }
 
+func TestBTreePointerSettersCheckPageType(t *testing.T) {
+	var nilPage *BTreePage
+	if err := nilPage.SetNextLeaf(7); err == nil {
+		t.Fatal("SetNextLeaf accepted nil page")
+	}
+	if err := nilPage.SetLeftmostChild(7); err == nil {
+		t.Fatal("SetLeftmostChild accepted nil page")
+	}
+
+	tests := []struct {
+		name string
+		page *BTreePage
+		set  func(*BTreePage) error
+	}{
+		{name: "next leaf on internal", page: func() *BTreePage {
+			page := &BTreePage{ID: 1}
+			InitInternalPage(page)
+			return page
+		}(), set: func(page *BTreePage) error { return page.SetNextLeaf(23) }},
+		{name: "next leaf on invalid type", page: &BTreePage{ID: 2, Data: [PAGE_SIZE]byte{0xff}}, set: func(page *BTreePage) error { return page.SetNextLeaf(23) }},
+		{name: "leftmost child on leaf", page: func() *BTreePage {
+			page := &BTreePage{ID: 3}
+			InitLeafPage(page)
+			return page
+		}(), set: func(page *BTreePage) error { return page.SetLeftmostChild(23) }},
+		{name: "leftmost child on invalid type", page: &BTreePage{ID: 4, Data: [PAGE_SIZE]byte{0xff}}, set: func(page *BTreePage) error { return page.SetLeftmostChild(23) }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			before := test.page.Data
+			if err := test.set(test.page); err == nil {
+				t.Fatal("pointer setter accepted the wrong page type")
+			}
+			if test.page.Data != before {
+				t.Fatal("failed pointer setter mutated page")
+			}
+		})
+	}
+
+	leaf := &BTreePage{ID: 5}
+	InitLeafPage(leaf)
+	if err := leaf.SetNextLeaf(29); err != nil {
+		t.Fatal(err)
+	}
+	if got := leaf.NextLeaf(); got != 29 {
+		t.Fatalf("next leaf = %d, want 29", got)
+	}
+
+	internal := &BTreePage{ID: 6}
+	InitInternalPage(internal)
+	if err := internal.SetLeftmostChild(31); err != nil {
+		t.Fatal(err)
+	}
+	if got := internal.GetChild(0); got != 31 {
+		t.Fatalf("leftmost child = %d, want 31", got)
+	}
+}
+
 func withIndex(t *testing.T, colName string, fn func(*Index)) {
 	t.Helper()
 	dataDir := filepath.Join(t.TempDir(), "data")

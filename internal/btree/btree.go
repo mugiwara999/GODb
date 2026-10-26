@@ -282,8 +282,15 @@ func (b *BTreePage) NextLeaf() uint32 {
 	return binary.LittleEndian.Uint32(b.Data[7:11])
 }
 
-func (b *BTreePage) SetNextLeaf(n uint32) {
+func (b *BTreePage) SetNextLeaf(n uint32) error {
+	if b == nil {
+		return fmt.Errorf("set next leaf: nil page")
+	}
+	if b.NodeType() != LeafNode {
+		return fmt.Errorf("set next leaf on page %d: expected leaf node, got %d", b.ID, b.NodeType())
+	}
 	binary.LittleEndian.PutUint32(b.Data[7:11], n)
+	return nil
 }
 
 func (b *BTreePage) PostingCount() int {
@@ -335,7 +342,7 @@ func (b *BTreePage) moveHalfKeysToLeaf(newPage *BTreePage) {
 	newPage.SetNumKeys(uint16(numKeys - half))
 }
 
-func (b *BTreePage) moveHalfKeysToInternal(newPage *BTreePage) uint64 {
+func (b *BTreePage) moveHalfKeysToInternal(newPage *BTreePage) (uint64, error) {
 
 	numKeys := b.GetNumKeys()
 	half := numKeys / 2
@@ -348,17 +355,26 @@ func (b *BTreePage) moveHalfKeysToInternal(newPage *BTreePage) uint64 {
 		b.Data[InternalHeaderSize+half*InternalEntrySize+InternalKeyOffset : InternalHeaderSize+half*InternalEntrySize+InternalPageIdOffset],
 	)
 
-	newPage.SetLeftmostChild(leftChild)
+	if err := newPage.SetLeftmostChild(leftChild); err != nil {
+		return 0, err
+	}
 
 	b.SetNumKeys(uint16(half))
 	newPage.SetNumKeys(uint16(numKeys - half - 1))
 
-	return ascendKey
+	return ascendKey, nil
 
 }
 
-func (b *BTreePage) SetLeftmostChild(childPageID uint32) {
+func (b *BTreePage) SetLeftmostChild(childPageID uint32) error {
+	if b == nil {
+		return fmt.Errorf("set leftmost child: nil page")
+	}
+	if b.NodeType() != InternalNode {
+		return fmt.Errorf("set leftmost child on page %d: expected internal node, got %d", b.ID, b.NodeType())
+	}
 	binary.LittleEndian.PutUint32(b.Data[7:11], childPageID)
+	return nil
 }
 
 func (b *BTreePage) PrintPage() {
