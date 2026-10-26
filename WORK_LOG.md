@@ -509,6 +509,15 @@
 - Limitations: `SetNumKeys` and `SetPostingCount` remain raw serialized-field writers; their call-site invariants need review.
 - Commit: `48db65f` (`Bounds-check posting page RID access`).
 
+### Bounds-check B-tree entry insertion
+
+- Finding: `InsertIntoLeafAt` and `InsertIntoInternalAt` trusted caller positions and counts before copying serialized entries, which could panic or write across page layouts.
+- Changes: both helpers now return errors and validate a nonnil matching node type, agreement between supplied and stored counts, available capacity, and insertion position before mutation. Index insert/split and leaf-rebalance callers propagate errors. `SetNumKeys` is documented as a raw serialized-field write used by validated split/rebalance paths and corruption tests.
+- Regression coverage: nil pages; wrong node types; negative/past positions; mismatched, full, and corrupt counts; failed-call no mutation; valid leaf/internal insert-and-read round trips.
+- Verification: focused tests passed; full `go test ./... -count=1`, build, vet, diff check, B-tree/table race tests, and Windows/Solaris package test-binary cross-builds passed.
+- Limitations: `SetNumKeys` and `SetPostingCount` remain raw count writers; review their call-site invariants next.
+- Commit: `e65c1bb` (`Check B-tree entry insertion bounds`).
+
 ## Prioritized backlog
 
 1. **Run storage durability tests on Windows and Solaris.** Creation, WAL, table/index lifecycle, and directory sync now pass native Linux and Windows CI. Windows exposed directory-flush rejection and open-index deletion sharing; both were addressed, and run `40267182421` passed tests, build, and vet on both OSes. Solaris runtime coverage remains unavailable. QEMU could not boot the checksum-verified OpenIndiana guest to a usable console, and no Oracle Solaris runtime is available. Solaris uses a process-local lock fallback. Dependencies: native or emulated test environments. Risks: directory-sync, rename, unlink, and lock behavior differs; cross-builds and injected Linux failures do not prove power-loss guarantees. Acceptance: native Windows coverage is satisfied by the hosted matrix; obtain a usable Solaris/illumos runtime and run table/index creation and removal, interrupted-create recovery, WAL begin/rollback/recovery, and lock tests there. Document unsupported semantics or return clear errors if required primitives fail. Tests needed: native runtime coverage of those paths on Solaris.
