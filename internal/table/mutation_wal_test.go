@@ -106,3 +106,52 @@ func TestSecondaryIndexErrorRollsBackTableMutation(t *testing.T) {
 		t.Fatalf("ValidateIndexes after rollback: %v", err)
 	}
 }
+
+func TestRangeUpdateRollbackRestoresRowsAndIndexes(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "data")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DATA_DIR", dataDir)
+	tbl, err := CreateWithTypes("range_update_rollback", []Column{
+		{Name: "age", Type: ColumnUint64},
+		{Name: "name", Type: ColumnText},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tbl.Close()
+	for _, row := range [][]string{{"10", "A"}, {"20", "B"}, {"30", "C"}} {
+		if err := tbl.Insert(row); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tbl.CreateIndex("age"); err != nil {
+		t.Fatal(err)
+	}
+	low, high := uint64(10), uint64(30)
+	rangeBy := Uint64Range{ColIdx: 1, Lower: &low, LowerInclusive: true, Upper: &high, UpperInclusive: false}
+	injected := errors.New("injected failure after range update")
+	err = tbl.mutate(func() error {
+		if err := tbl.update(nil, []UpdateValue{{ColIdx: 1, Value: "99"}}, &rangeBy); err != nil {
+			return err
+		}
+		return injected
+	})
+	if !errors.Is(err, injected) {
+		t.Fatalf("range update mutation error = %v, want injected failure", err)
+	}
+	for _, value := range []string{"10", "20"} {
+		rows, err := tbl.Select([]string{"name"}, []ColEq{{ColIdx: 1, Value: value}})
+		if err != nil || len(rows) != 2 {
+			t.Fatalf("Select age %s after rollback = %q, %v; want one row", value, rows, err)
+		}
+	}
+	rows, err := tbl.Select([]string{"name"}, []ColEq{{ColIdx: 1, Value: "99"}})
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("Select rolled-back age 99 = %q, %v; want header only", rows, err)
+	}
+	if err := tbl.ValidateIndexes(); err != nil {
+		t.Fatalf("ValidateIndexes after range rollback: %v", err)
+	}
+}

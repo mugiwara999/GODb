@@ -121,3 +121,42 @@ func TestCommandLoopCreatesTypedColumnsAndValidatesValues(t *testing.T) {
 		t.Fatalf("persisted rows = %q, want Ada and Grace", rows)
 	}
 }
+
+func TestCommandLoopRangeMutationsMaintainIndexes(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "data")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DATA_DIR", dataDir)
+	input := strings.Join([]string{
+		"CREATE TABLE ranges (age UINT64, name TEXT)",
+		"INSERT INTO ranges VALUES 10, 'A'",
+		"INSERT INTO ranges VALUES 20, 'B'",
+		"INSERT INTO ranges VALUES 30, 'C'",
+		"CREATE INDEX ON ranges(age)",
+		"UPDATE ranges SET age=25 WHERE age>=20 AND age<30",
+		"UPDATE ranges SET name='B2' WHERE age>=25 AND age<=25",
+		"DELETE FROM ranges WHERE age>=30",
+		"SELECT name FROM ranges WHERE age>=20 AND age<30",
+	}, "\n")
+	var output bytes.Buffer
+	run(strings.NewReader(input), &output)
+	if !strings.Contains(output.String(), "name\nB2\n") {
+		t.Fatalf("command output %q does not include range-mutated result", output.String())
+	}
+	tbl, err := table.Open("ranges")
+	if err != nil {
+		t.Fatalf("Open ranges: %v", err)
+	}
+	defer tbl.Close()
+	rows, err := tbl.Select([]string{"age", "name"}, nil)
+	if err != nil {
+		t.Fatalf("Select persisted rows: %v", err)
+	}
+	if len(rows) != 3 || strings.Join(rows[1], ",") != "10,A" || strings.Join(rows[2], ",") != "25,B2" {
+		t.Fatalf("persisted rows = %q, want A and B2", rows)
+	}
+	if err := tbl.ValidateIndexes(); err != nil {
+		t.Fatalf("ValidateIndexes after range mutations: %v", err)
+	}
+}

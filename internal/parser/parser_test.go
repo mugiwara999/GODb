@@ -21,6 +21,8 @@ func TestParseSupportedStatements(t *testing.T) {
 		{"select range", "SELECT name FROM users WHERE age>=18 AND age<65 AND name='Ada'", Query{Type: "select", Table: "users", Columns: []string{"name"}, Filters: []Pair{{"name", "Ada"}}, RangeFilters: []RangePair{{"age", ">=", "18"}, {"age", "<", "65"}}}},
 		{"delete all", "DELETE FROM users", Query{Type: "delete", Table: "users"}},
 		{"update", "UPDATE users SET name='Ada', age=37 WHERE id=7", Query{Type: "update", Table: "users", Updates: []Pair{{"name", "Ada"}, {"age", "37"}}, Filters: []Pair{{"id", "7"}}}},
+		{"update range", "UPDATE users SET age=20 WHERE age>=10 AND age<20", Query{Type: "update", Table: "users", Updates: []Pair{{"age", "20"}}, RangeFilters: []RangePair{{"age", ">=", "10"}, {"age", "<", "20"}}}},
+		{"delete range", "DELETE FROM users WHERE age>20", Query{Type: "delete", Table: "users", RangeFilters: []RangePair{{"age", ">", "20"}}}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -58,9 +60,7 @@ func TestParseRejectsMalformedSeparatorsAndTrailingTokens(t *testing.T) {
 		"SELECT id FROM users WHERE age>=",
 		"SELECT id FROM users WHERE age><5",
 		"DELETE FROM users WHERE id=7 AND AND name=Ada",
-		"DELETE FROM users WHERE id>7",
 		"UPDATE users SET name=Ada, WHERE id=7",
-		"UPDATE users SET name=Ada WHERE id>=7",
 	}
 	for _, input := range inputs {
 		t.Run(input, func(t *testing.T) {

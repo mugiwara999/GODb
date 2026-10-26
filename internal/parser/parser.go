@@ -46,7 +46,7 @@ func unexpectedToken(op string, token lexer.Token) error {
 }
 
 func parseFilters(l *lexer.Lexer, token lexer.Token, op string, allowRanges bool) ([]Pair, []RangePair, error) {
-	filters := make([]Pair, 0)
+	var filters []Pair
 	var ranges []RangePair
 	for {
 		if token.Type != lexer.TOKEN_IDENT {
@@ -283,14 +283,12 @@ func Parse(input string) (*Query, error) {
 			return nil, syntaxError("parse delete", "expected WHERE after table name")
 		}
 
-		filters, ranges, err := parseFilters(l, l.NextToken(), "parse delete where clause", false)
+		filters, ranges, err := parseFilters(l, l.NextToken(), "parse delete where clause", true)
 		if err != nil {
 			return nil, err
 		}
-		if len(ranges) > 0 {
-			return nil, syntaxError("parse delete where clause", "range predicates are supported only for SELECT")
-		}
 		query.Filters = filters
+		query.RangeFilters = ranges
 		return query, nil
 
 	case lexer.TOKEN_INSERT:
@@ -387,14 +385,12 @@ func Parse(input string) (*Query, error) {
 			return nil, syntaxError("parse update", "expected WHERE after assignments")
 		}
 
-		filters, ranges, err := parseFilters(l, l.NextToken(), "parse update where clause", false)
+		filters, ranges, err := parseFilters(l, l.NextToken(), "parse update where clause", true)
 		if err != nil {
 			return nil, err
 		}
-		if len(ranges) > 0 {
-			return nil, syntaxError("parse update where clause", "range predicates are supported only for SELECT")
-		}
 		query.Filters = filters
+		query.RangeFilters = ranges
 		return query, nil
 	}
 

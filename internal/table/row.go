@@ -28,6 +28,37 @@ type Uint64Range struct {
 	UpperInclusive bool
 }
 
+func (t *Table) validateUint64Range(selectedRange Uint64Range, operation string) error {
+	if selectedRange.ColIdx < 0 || selectedRange.ColIdx >= len(t.cols) {
+		return fmt.Errorf("%s from table %q: column index %d is out of range", operation, t.Name, selectedRange.ColIdx)
+	}
+	if t.colTypes[selectedRange.ColIdx] != ColumnUint64 {
+		return fmt.Errorf("%s from table %q: column %q is not UINT64", operation, t.Name, t.cols[selectedRange.ColIdx])
+	}
+	return nil
+}
+
+func valueInUint64Range(value uint64, selectedRange Uint64Range) bool {
+	if selectedRange.Lower != nil && (value < *selectedRange.Lower || value == *selectedRange.Lower && !selectedRange.LowerInclusive) {
+		return false
+	}
+	if selectedRange.Upper != nil && (value > *selectedRange.Upper || value == *selectedRange.Upper && !selectedRange.UpperInclusive) {
+		return false
+	}
+	return true
+}
+
+func (t *Table) rowMatchesUint64Range(row []string, selectedRange *Uint64Range) (bool, error) {
+	if selectedRange == nil {
+		return true, nil
+	}
+	value, err := strconv.ParseUint(row[selectedRange.ColIdx], 10, 64)
+	if err != nil {
+		return false, fmt.Errorf("invalid UINT64 value in range column %q: %w", t.cols[selectedRange.ColIdx], err)
+	}
+	return valueInUint64Range(value, *selectedRange), nil
+}
+
 type UpdateValue struct {
 	ColIdx int
 	Value  string
@@ -302,11 +333,8 @@ func (t *Table) SelectRange(columns []string, selectedRange Uint64Range, colEqua
 }
 
 func (t *Table) selectRangeRows(columns []string, selectedRange Uint64Range, colEquals []ColEq) ([][]string, error) {
-	if selectedRange.ColIdx < 0 || selectedRange.ColIdx >= len(t.cols) {
-		return nil, fmt.Errorf("select range from table %q: column index %d is out of range", t.Name, selectedRange.ColIdx)
-	}
-	if t.colTypes[selectedRange.ColIdx] != ColumnUint64 {
-		return nil, fmt.Errorf("select range from table %q: column %q is not UINT64", t.Name, t.cols[selectedRange.ColIdx])
+	if err := t.validateUint64Range(selectedRange, "select range"); err != nil {
+		return nil, err
 	}
 	if len(columns) > 0 && columns[0] == "*" {
 		columns = t.GetColumns()
@@ -347,13 +375,7 @@ func (t *Table) selectRangeRows(columns []string, selectedRange Uint64Range, col
 		return true
 	}
 	inRange := func(value uint64) bool {
-		if selectedRange.Lower != nil && (value < *selectedRange.Lower || value == *selectedRange.Lower && !selectedRange.LowerInclusive) {
-			return false
-		}
-		if selectedRange.Upper != nil && (value > *selectedRange.Upper || value == *selectedRange.Upper && !selectedRange.UpperInclusive) {
-			return false
-		}
-		return true
+		return valueInUint64Range(value, selectedRange)
 	}
 	index := t.Indexes[t.cols[selectedRange.ColIdx]]
 	if index == nil {
@@ -651,13 +673,22 @@ func (t *Table) selectRows(columns []string, colEquals []ColEq) ([][]string, err
 }
 
 func (t *Table) Delete(filters []ColEq) error {
-	return t.mutate(func() error { return t.delete(filters) })
+	return t.mutate(func() error { return t.delete(filters, nil) })
 }
 
-func (t *Table) delete(filters []ColEq) error {
+func (t *Table) DeleteRange(selectedRange Uint64Range, filters []ColEq) error {
+	return t.mutate(func() error { return t.delete(filters, &selectedRange) })
+}
+
+func (t *Table) delete(filters []ColEq, selectedRange *Uint64Range) error {
 	filters, err := t.normalizeFilters(filters, "delete from")
 	if err != nil {
 		return err
+	}
+	if selectedRange != nil {
+		if err := t.validateUint64Range(*selectedRange, "delete range"); err != nil {
+			return err
+		}
 	}
 	index := t.Indexes["id"]
 	if index == nil {
@@ -679,8 +710,14 @@ func (t *Table) delete(filters []ColEq) error {
 			return fmt.Errorf("delete from table %q: corrupt row: %w", t.Name, err)
 		}
 
-		match := true
+		match, err := t.rowMatchesUint64Range(row, selectedRange)
+		if err != nil {
+			return fmt.Errorf("delete from table %q: %w", t.Name, err)
+		}
 		for _, v := range filters {
+			if !match {
+				break
+			}
 			if v.ColIdx < 0 || v.ColIdx >= len(row) {
 				return fmt.Errorf("delete from table %q: filter column index %d is out of range for row with %d values", t.Name, v.ColIdx, len(row))
 			}
@@ -731,13 +768,22 @@ func (t *Table) delete(filters []ColEq) error {
 }
 
 func (t *Table) Update(filters []ColEq, toUpdate []UpdateValue) error {
-	return t.mutate(func() error { return t.update(filters, toUpdate) })
+	return t.mutate(func() error { return t.update(filters, toUpdate, nil) })
 }
 
-func (t *Table) update(filters []ColEq, toUpdate []UpdateValue) error {
+func (t *Table) UpdateRange(selectedRange Uint64Range, filters []ColEq, toUpdate []UpdateValue) error {
+	return t.mutate(func() error { return t.update(filters, toUpdate, &selectedRange) })
+}
+
+func (t *Table) update(filters []ColEq, toUpdate []UpdateValue, selectedRange *Uint64Range) error {
 	filters, err := t.normalizeFilters(filters, "update")
 	if err != nil {
 		return err
+	}
+	if selectedRange != nil {
+		if err := t.validateUint64Range(*selectedRange, "update range"); err != nil {
+			return err
+		}
 	}
 	toUpdate = append([]UpdateValue(nil), toUpdate...)
 	for i, update := range toUpdate {
@@ -777,8 +823,14 @@ func (t *Table) update(filters []ColEq, toUpdate []UpdateValue) error {
 			return fmt.Errorf("update table %q: corrupt row: %w", t.Name, err)
 		}
 
-		match := true
+		match, err := t.rowMatchesUint64Range(row, selectedRange)
+		if err != nil {
+			return fmt.Errorf("update table %q: %w", t.Name, err)
+		}
 		for _, v := range filters {
+			if !match {
+				break
+			}
 			if v.ColIdx < 0 || v.ColIdx >= len(row) {
 				return fmt.Errorf("update table %q: filter column index %d is out of range for row with %d values", t.Name, v.ColIdx, len(row))
 			}

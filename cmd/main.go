@@ -115,7 +115,17 @@ func run(input io.Reader, output io.Writer) {
 					fmt.Fprintln(output, err)
 					break
 				}
-				if err := tbl.Delete(filters); err != nil {
+				if len(query.RangeFilters) > 0 {
+					rangeBy, err := resolveRangeFilters(tbl, query.RangeFilters)
+					if err != nil {
+						fmt.Fprintln(output, err)
+						break
+					}
+					err = tbl.DeleteRange(rangeBy, filters)
+				} else {
+					err = tbl.Delete(filters)
+				}
+				if err != nil {
 					fmt.Fprintln(output, err)
 				}
 			case "update":
@@ -129,7 +139,17 @@ func run(input io.Reader, output io.Writer) {
 					fmt.Fprintln(output, err)
 					break
 				}
-				if err := tbl.Update(filters, updates); err != nil {
+				if len(query.RangeFilters) > 0 {
+					rangeBy, err := resolveRangeFilters(tbl, query.RangeFilters)
+					if err != nil {
+						fmt.Fprintln(output, err)
+						break
+					}
+					err = tbl.UpdateRange(rangeBy, filters, updates)
+				} else {
+					err = tbl.Update(filters, updates)
+				}
+				if err != nil {
 					fmt.Fprintln(output, err)
 				}
 			}
