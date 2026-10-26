@@ -415,6 +415,7 @@
 - Benchmark on Linux/amd64, 13th Gen Intel Core i5-13500H, `-benchtime=200ms -count=2 -cpu=1`, with RIDs clustered at 256 slots per page: for 10,000 duplicate RIDs, batch iteration 1.79–2.23 ms/op and 872 KB/op; streamed slice validation 0.209–0.220 ms/op and 436 KB/op. For 100,000 duplicate RIDs, batch 17.08–17.76 ms/op and 8.31 MB/op; streamed slice validation 2.12–2.25 ms/op and 4.83 MB/op. Table SELECT over 1,024 duplicate rows measured 0.462–0.472 ms/op and 289 KB/op, compared with the prior 0.598–0.600 ms/op and 319 KB/op.
 - Limitations: the validation slice still grows linearly with one posting chain; this halves allocation relative to the previous streaming map and avoids the batch RID slice, but does not give a strict constant-memory bound. Exact validation for arbitrary unsorted RIDs would need external storage or a persistent uniqueness structure.
 - Commit: `64098c2` (`Compact range RID duplicate checks`).
+- Scaling benchmark follow-up: `766bb57` (`Benchmark duplicate RID scaling`).
 
 ## Prioritized backlog
 
