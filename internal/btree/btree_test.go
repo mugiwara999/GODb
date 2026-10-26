@@ -520,6 +520,79 @@ func TestGetNumKeysValidatesNodeTypeAndCapacity(t *testing.T) {
 	}
 }
 
+func FuzzBTreePageAccessorsDoNotPanic(f *testing.F) {
+	leaf := &BTreePage{ID: 1}
+	InitLeafPage(leaf)
+	if err := leaf.SetKey(0, 11); err != nil {
+		f.Fatal(err)
+	}
+	if err := leaf.SetRID(0, RID{pageID: 2, slotID: 3}); err != nil {
+		f.Fatal(err)
+	}
+	if err := leaf.SetNumKeys(1); err != nil {
+		f.Fatal(err)
+	}
+	f.Add(leaf.Data[:], 0, uint64(7), uint32(9), uint16(11))
+
+	internal := &BTreePage{ID: 2}
+	InitInternalPage(internal)
+	if err := internal.SetLeftmostChild(3); err != nil {
+		f.Fatal(err)
+	}
+	if err := internal.InsertIntoInternalAt(0, 13, 4, 0); err != nil {
+		f.Fatal(err)
+	}
+	if err := internal.SetNumKeys(1); err != nil {
+		f.Fatal(err)
+	}
+	f.Add(internal.Data[:], 0, uint64(13), uint32(4), uint16(5))
+
+	posting := &BTreePage{ID: 3}
+	posting.Data[0] = byte(PostingNode)
+	if err := posting.SetPostingRID(0, RID{pageID: 5, slotID: 6}); err != nil {
+		f.Fatal(err)
+	}
+	if err := posting.SetPostingCount(1); err != nil {
+		f.Fatal(err)
+	}
+	f.Add(posting.Data[:], 0, uint64(17), uint32(7), uint16(8))
+
+	corrupt := &BTreePage{ID: 4}
+	InitLeafPage(corrupt)
+	setRawPageCountForTest(corrupt, ^uint16(0))
+	f.Add(corrupt.Data[:], -1, uint64(19), uint32(9), uint16(10))
+
+	f.Fuzz(func(t *testing.T, data []byte, index int, key uint64, pageID uint32, slotID uint16) {
+		page := &BTreePage{ID: pageID}
+		copy(page.Data[:], data)
+		rid := RID{pageID: pageID, slotID: slotID}
+
+		_, _ = page.GetNumKeys()
+		_, _ = page.GetKey(index)
+		_, _ = page.GetRID(index)
+		_, _ = page.GetChild(uint32(index))
+		_, _ = page.ParentID()
+		_, _ = page.GetParentID()
+		_, _ = page.NextLeaf()
+		_, _ = page.PostingCount()
+		_, _ = page.NextPostingPage()
+		_, _ = page.GetPostingRID(index)
+
+		_ = page.SetKey(index, key)
+		_ = page.SetRID(index, rid)
+		_ = page.InsertIntoLeafAt(index, key, rid, 0)
+		_ = page.InsertIntoInternalAt(index, key, pageID, 0)
+		_ = page.SetNumKeys(uint16(index))
+		_ = page.IncrementNumKeys()
+		_ = page.SetParentID(pageID)
+		_ = page.SetNextLeaf(pageID)
+		_ = page.SetPostingCount(uint16(index))
+		_ = page.SetNextPostingPage(pageID)
+		_ = page.SetPostingRID(index, rid)
+		_ = page.SetLeftmostChild(pageID)
+	})
+}
+
 func TestSetPostingCountValidatesNodeCapacity(t *testing.T) {
 	var nilPage *BTreePage
 	if err := nilPage.SetPostingCount(0); err == nil {
