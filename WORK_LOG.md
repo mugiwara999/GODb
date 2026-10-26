@@ -184,11 +184,20 @@
 - Limitations: `DeserializeRow` remains a permissive low-level helper for compatibility; table operations use the strict schema-aware decoder.
 - Commit: `ffe0b44` (`Reject malformed serialized table rows`).
 
+### Restore Solaris build coverage for process-local locks
+
+- Priority: portability and platform correctness. `lock_unix.go` excludes Solaris, while `lock_other.go` also excluded it, leaving the package with no buildable implementation on Solaris.
+- Changes: made the fallback lock build constraint the complement of the supported `flock` targets, so Solaris and other remaining platforms use the documented process-local mutex. Added fallback-lock serialization coverage and documented the exact advisory-lock targets plus runtime durability verification scope in README.
+- Regression coverage: fallback lock test verifies a second same-process acquisition blocks until the first lock closes. Linux tests pass; Solaris full build and filelock test binary cross-compile; Windows full build passes.
+- Verification: `GOCACHE=/tmp/goDB-gocache go test ./internal/filelock`, full `GOCACHE=/tmp/goDB-gocache go test ./...`, `GOOS=solaris GOARCH=amd64 GOCACHE=/tmp/goDB-gocache go build ./...`, `GOOS=solaris GOARCH=amd64 GOCACHE=/tmp/goDB-gocache go test -c -o /tmp/goDB-filelock-solaris.test ./internal/filelock`, `GOOS=windows GOARCH=amd64 GOCACHE=/tmp/goDB-gocache go build ./...`, and `git diff --check` passed.
+- Limitations: runtime tests were available only on Linux. Cross-compilation proves the Solaris fallback builds but does not validate directory-sync behavior or crash durability on Solaris or Windows.
+- Commit: pending.
+
 ## Prioritized backlog
 
 1. **Define a typed value model and duplicate-key index representation.** Current columns have no types and the B+ tree maps unique `uint64` keys to one RID. This blocks useful secondary indexes because repeated arbitrary string values cannot be represented or compared with stable semantics. Dependencies: schema metadata/versioning and WAL-backed migration or a clear compatibility strategy. Risks: changing existing table/index formats and maintaining multiple RIDs per key. Acceptance: document supported types, key ordering, duplicate behavior, and migration compatibility before exposing secondary-index DDL; add format and recovery tests as part of implementation.
-2. **Exercise filesystem durability boundaries on each supported OS.** Table creation and WAL startup depend on syncing containing directories; Unix uses advisory `flock`, other platforms use a process-local fallback. This matters because build success does not prove runtime durability behavior. Dependencies: platform-specific test environments. Risks: directory sync and lock APIs differ. Acceptance: document supported durability guarantees per OS and run create/recovery tests on each supported platform, or fail explicitly where required primitives are unavailable.
+2. **Run storage durability tests on Windows and Solaris.** Creation and WAL setup sync containing directories, but runtime verification is available only on Linux; both Windows and Solaris are cross-build-only so far. Solaris also uses a process-local lock fallback. Dependencies: native or emulated platform test environments. Risks: directory sync behavior differs and cross-builds do not prove power-loss guarantees. Acceptance: run table creation, interrupted-create recovery, WAL begin/rollback/recovery, and lock tests on each OS; document unsupported semantics or return clear errors if required primitives fail.
 
 ## Next action
 
-Next task: inspect durability and locking implementations per OS, then run runtime create/recovery checks on available platforms and document any unsupported guarantees. Preserve the supplied untracked `AGENTS.md`.
+Next task: obtain runtime test coverage for Windows and Solaris storage semantics when those environments are available; until then, keep their status documented as cross-build-only. Preserve the supplied untracked `AGENTS.md`.
