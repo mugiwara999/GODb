@@ -362,18 +362,45 @@ func (b *BTreePage) SetNextPostingPage(id uint32) {
 	binary.LittleEndian.PutUint32(b.Data[3:7], id)
 }
 
-func (b *BTreePage) GetPostingRID(i int) RID {
+func (b *BTreePage) GetPostingRID(i int) (RID, error) {
+	if b == nil {
+		return RID{}, fmt.Errorf("get posting RID: nil page")
+	}
+	if b.NodeType() != PostingNode {
+		return RID{}, fmt.Errorf("get posting RID from page %d: expected posting node, got %d", b.ID, b.NodeType())
+	}
+	count := b.PostingCount()
+	if count < 1 || count > MaxRIDsPerPosting {
+		return RID{}, fmt.Errorf("get posting RID from page %d: invalid RID count %d", b.ID, count)
+	}
+	if i < 0 || i >= count {
+		return RID{}, fmt.Errorf("get posting RID %d from page %d: index out of range [0, %d)", i, b.ID, count)
+	}
 	offset := PostingHeaderSize + i*PostingRIDSize
 	return RID{
 		pageID: binary.LittleEndian.Uint32(b.Data[offset : offset+4]),
 		slotID: binary.LittleEndian.Uint16(b.Data[offset+4 : offset+6]),
-	}
+	}, nil
 }
 
-func (b *BTreePage) SetPostingRID(i int, rid RID) {
+func (b *BTreePage) SetPostingRID(i int, rid RID) error {
+	if b == nil {
+		return fmt.Errorf("set posting RID: nil page")
+	}
+	if b.NodeType() != PostingNode {
+		return fmt.Errorf("set posting RID on page %d: expected posting node, got %d", b.ID, b.NodeType())
+	}
+	count := b.PostingCount()
+	if count > MaxRIDsPerPosting {
+		return fmt.Errorf("set posting RID on page %d: invalid RID count %d", b.ID, count)
+	}
+	if i < 0 || i >= MaxRIDsPerPosting || i > count {
+		return fmt.Errorf("set posting RID %d on page %d: index must be within [0, %d]", i, b.ID, count)
+	}
 	offset := PostingHeaderSize + i*PostingRIDSize
 	binary.LittleEndian.PutUint32(b.Data[offset:offset+4], rid.pageID)
 	binary.LittleEndian.PutUint16(b.Data[offset+4:offset+6], rid.slotID)
+	return nil
 }
 
 func (b *BTreePage) GetChild(i uint32) (uint32, error) {

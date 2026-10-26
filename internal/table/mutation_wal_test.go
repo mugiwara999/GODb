@@ -327,7 +327,13 @@ func TestIndexedRangeSelectRejectsDuplicatePostingRID(t *testing.T) {
 		t.Fatal(err)
 	}
 	original := posting.Data
-	posting.SetPostingRID(1, posting.GetPostingRID(0))
+	firstRID, err := posting.GetPostingRID(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := posting.SetPostingRID(1, firstRID); err != nil {
+		t.Fatal(err)
+	}
 	if err := secondary.WritePage(posting); err != nil {
 		t.Fatal(err)
 	}

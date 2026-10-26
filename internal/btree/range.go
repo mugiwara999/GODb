@@ -193,7 +193,11 @@ func (it *RangeRIDIterator) Next() (entry RangeRIDEntry, ok bool, err error) {
 				it.postingIndex = 0
 			}
 			if it.postingIndex < it.postingCount {
-				rid := it.postingPage.GetPostingRID(it.postingIndex)
+				rid, err := it.postingPage.GetPostingRID(it.postingIndex)
+				if err != nil {
+					it.done = true
+					return RangeRIDEntry{}, false, err
+				}
 				it.postingIndex++
 				if rid.slotID == PostingMarkerSlot {
 					it.done = true

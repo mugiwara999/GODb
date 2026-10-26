@@ -357,6 +357,96 @@ func TestIncrementNumKeysChecksNodeCapacity(t *testing.T) {
 	}
 }
 
+func TestPostingRIDAccessorsValidatePageAndIndex(t *testing.T) {
+	var nilPage *BTreePage
+	if _, err := nilPage.GetPostingRID(0); err == nil {
+		t.Fatal("GetPostingRID accepted nil page")
+	}
+	if err := nilPage.SetPostingRID(0, RID{}); err == nil {
+		t.Fatal("SetPostingRID accepted nil page")
+	}
+	tests := []struct {
+		name  string
+		page  *BTreePage
+		index int
+	}{
+		{name: "leaf page", page: func() *BTreePage { p := &BTreePage{}; InitLeafPage(p); return p }(), index: 0},
+		{name: "invalid page type", page: &BTreePage{Data: [PAGE_SIZE]byte{0xff}}, index: 0},
+		{name: "empty posting page", page: func() *BTreePage { p := &BTreePage{}; p.Data[0] = byte(PostingNode); return p }(), index: 0},
+		{name: "negative index", page: func() *BTreePage { p := &BTreePage{}; p.Data[0] = byte(PostingNode); p.SetPostingCount(1); return p }(), index: -1},
+		{name: "past count", page: func() *BTreePage { p := &BTreePage{}; p.Data[0] = byte(PostingNode); p.SetPostingCount(1); return p }(), index: 1},
+		{name: "maximum int", page: func() *BTreePage { p := &BTreePage{}; p.Data[0] = byte(PostingNode); p.SetPostingCount(1); return p }(), index: int(^uint(0) >> 1)},
+		{name: "corrupt count", page: func() *BTreePage {
+			p := &BTreePage{}
+			p.Data[0] = byte(PostingNode)
+			p.SetPostingCount(^uint16(0))
+			return p
+		}(), index: 0},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			before := test.page.Data
+			if _, err := test.page.GetPostingRID(test.index); err == nil {
+				t.Fatal("GetPostingRID accepted malformed page or index")
+			}
+			if test.page.Data != before {
+				t.Fatal("failed posting accessor mutated page")
+			}
+		})
+	}
+	for _, test := range []struct {
+		name  string
+		page  *BTreePage
+		index int
+	}{
+		{name: "wrong type", page: func() *BTreePage { p := &BTreePage{}; InitLeafPage(p); return p }(), index: 0},
+		{name: "negative index", page: func() *BTreePage { p := &BTreePage{}; p.Data[0] = byte(PostingNode); return p }(), index: -1},
+		{name: "skipped slot", page: func() *BTreePage { p := &BTreePage{}; p.Data[0] = byte(PostingNode); p.SetPostingCount(1); return p }(), index: 2},
+		{name: "past physical capacity", page: func() *BTreePage {
+			p := &BTreePage{}
+			p.Data[0] = byte(PostingNode)
+			p.SetPostingCount(uint16(MaxRIDsPerPosting))
+			return p
+		}(), index: MaxRIDsPerPosting},
+		{name: "corrupt count", page: func() *BTreePage {
+			p := &BTreePage{}
+			p.Data[0] = byte(PostingNode)
+			p.SetPostingCount(^uint16(0))
+			return p
+		}(), index: 0},
+	} {
+		t.Run("set "+test.name, func(t *testing.T) {
+			before := test.page.Data
+			if err := test.page.SetPostingRID(test.index, RID{pageID: 3, slotID: 4}); err == nil {
+				t.Fatal("SetPostingRID accepted malformed page or index")
+			}
+			if test.page.Data != before {
+				t.Fatal("failed SetPostingRID mutated page")
+			}
+		})
+	}
+
+	page := &BTreePage{}
+	page.Data[0] = byte(PostingNode)
+	want := RID{pageID: 42, slotID: 17}
+	if err := page.SetPostingRID(0, want); err != nil {
+		t.Fatal(err)
+	}
+	page.SetPostingCount(1)
+	if got, err := page.GetPostingRID(0); err != nil || got != want {
+		t.Fatalf("GetPostingRID(0) = %+v, %v; want %+v", got, err, want)
+	}
+
+	page.SetPostingCount(uint16(MaxRIDsPerPosting))
+	last := MaxRIDsPerPosting - 1
+	if err := page.SetPostingRID(last, want); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := page.GetPostingRID(last); err != nil || got != want {
+		t.Fatalf("GetPostingRID(last) = %+v, %v; want %+v", got, err, want)
+	}
+}
+
 func withIndex(t *testing.T, colName string, fn func(*Index)) {
 	t.Helper()
 	dataDir := filepath.Join(t.TempDir(), "data")

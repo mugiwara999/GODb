@@ -909,8 +909,12 @@ func (ind *Index) InsertDuplicate(key uint64, pageID uint32, slotID uint16) erro
 				return err
 			}
 			posting.SetPostingCount(2)
-			posting.SetPostingRID(0, *stored)
-			posting.SetPostingRID(1, rid)
+			if err := posting.SetPostingRID(0, *stored); err != nil {
+				return err
+			}
+			if err := posting.SetPostingRID(1, rid); err != nil {
+				return err
+			}
 			if err := ind.WritePage(posting); err != nil {
 				return fmt.Errorf("write posting page %d: %w", posting.ID, err)
 			}
@@ -931,7 +935,9 @@ func (ind *Index) InsertDuplicate(key uint64, pageID uint32, slotID uint16) erro
 		}
 		tail := postingPages[len(postingPages)-1]
 		if tail.PostingCount() < MaxRIDsPerPosting {
-			tail.SetPostingRID(tail.PostingCount(), rid)
+			if err := tail.SetPostingRID(tail.PostingCount(), rid); err != nil {
+				return err
+			}
 			tail.SetPostingCount(uint16(tail.PostingCount() + 1))
 			return ind.WritePage(tail)
 		}
@@ -940,7 +946,9 @@ func (ind *Index) InsertDuplicate(key uint64, pageID uint32, slotID uint16) erro
 			return err
 		}
 		newPage.SetPostingCount(1)
-		newPage.SetPostingRID(0, rid)
+		if err := newPage.SetPostingRID(0, rid); err != nil {
+			return err
+		}
 		if err := ind.WritePage(newPage); err != nil {
 			return fmt.Errorf("write posting page %d: %w", newPage.ID, err)
 		}
@@ -1104,7 +1112,9 @@ func (ind *Index) DeleteRID(key uint64, pageID uint32, slotID uint16) error {
 					posting.SetNextPostingPage(0)
 				}
 				for j, rid := range rids[start:end] {
-					posting.SetPostingRID(j, rid)
+					if err := posting.SetPostingRID(j, rid); err != nil {
+						return err
+					}
 				}
 				if err := ind.WritePage(posting); err != nil {
 					return err
@@ -1158,7 +1168,10 @@ func (ind *Index) readPostingChain(head uint32) ([]*BTreePage, []RID, error) {
 		}
 		pages = append(pages, page)
 		for i := 0; i < count; i++ {
-			rid := page.GetPostingRID(i)
+			rid, err := page.GetPostingRID(i)
+			if err != nil {
+				return nil, nil, err
+			}
 			if rid.slotID == PostingMarkerSlot {
 				return nil, nil, fmt.Errorf("posting page %d contains reserved marker RID", pageID)
 			}
