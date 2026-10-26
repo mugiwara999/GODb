@@ -94,11 +94,71 @@ func TestBTreeLeafSettersWriteLastPhysicalEntry(t *testing.T) {
 	if err := page.SetRID(index, wantRID); err != nil {
 		t.Fatalf("SetRID at last physical entry: %v", err)
 	}
-	if got := page.GetKey(index); got != 99 {
+	page.SetNumKeys(uint16(MaxKeysPerLeaf))
+	got, err := page.GetKey(index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != 99 {
 		t.Fatalf("last entry key = %d, want 99", got)
 	}
 	if got := page.GetRID(index); *got != wantRID {
 		t.Fatalf("last entry RID = %+v, want %+v", *got, wantRID)
+	}
+}
+
+func TestBTreeGetKeyValidatesPageAndIndex(t *testing.T) {
+	var nilPage *BTreePage
+	if _, err := nilPage.GetKey(0); err == nil {
+		t.Fatal("GetKey accepted a nil page")
+	}
+
+	tests := []struct {
+		name  string
+		page  *BTreePage
+		index int
+	}{
+		{name: "invalid node type", page: &BTreePage{ID: 1, Data: [PAGE_SIZE]byte{0xff}}, index: 0},
+		{name: "posting node", page: func() *BTreePage { p := &BTreePage{ID: 2}; p.Data[0] = byte(PostingNode); p.SetNumKeys(1); return p }(), index: 0},
+		{name: "negative index", page: func() *BTreePage { p := &BTreePage{ID: 3}; InitLeafPage(p); p.SetNumKeys(1); return p }(), index: -1},
+		{name: "past count", page: func() *BTreePage { p := &BTreePage{ID: 4}; InitLeafPage(p); p.SetNumKeys(1); return p }(), index: 1},
+		{name: "maximum int", page: func() *BTreePage { p := &BTreePage{ID: 5}; InitLeafPage(p); p.SetNumKeys(1); return p }(), index: int(^uint(0) >> 1)},
+		{name: "corrupt leaf count", page: func() *BTreePage { p := &BTreePage{ID: 6}; InitLeafPage(p); p.SetNumKeys(MaxKeysPerLeaf + 1); return p }(), index: 0},
+		{name: "corrupt internal count", page: func() *BTreePage {
+			p := &BTreePage{ID: 7}
+			InitInternalPage(p)
+			p.SetNumKeys(MaxKeysPerInternal + 1)
+			return p
+		}(), index: 0},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			before := test.page.Data
+			if _, err := test.page.GetKey(test.index); err == nil {
+				t.Fatal("GetKey accepted malformed page or index")
+			}
+			if test.page.Data != before {
+				t.Fatal("failed GetKey mutated page")
+			}
+		})
+	}
+
+	leaf := &BTreePage{ID: 8}
+	InitLeafPage(leaf)
+	if err := leaf.SetKey(0, 101); err != nil {
+		t.Fatal(err)
+	}
+	leaf.SetNumKeys(1)
+	if got, err := leaf.GetKey(0); err != nil || got != 101 {
+		t.Fatalf("leaf GetKey = %d, %v; want 101", got, err)
+	}
+
+	internal := &BTreePage{ID: 9}
+	InitInternalPage(internal)
+	internal.SetNumKeys(1)
+	binary.LittleEndian.PutUint64(internal.Data[InternalHeaderSize:InternalHeaderSize+InternalKeySize], 202)
+	if got, err := internal.GetKey(0); err != nil || got != 202 {
+		t.Fatalf("internal GetKey = %d, %v; want 202", got, err)
 	}
 }
 
@@ -295,7 +355,10 @@ func TestDeleteSeparatorKeyKeepsTreeSearchable(t *testing.T) {
 		// The final root separator routes into the rightmost leaf, which has
 		// spare capacity after this insert count. This isolates fence-key
 		// routing from underflow/rebalancing behavior.
-		key := root.GetKey(root.GetNumKeys() - 1)
+		key, err := root.GetKey(root.GetNumKeys() - 1)
+		if err != nil {
+			t.Fatal(err)
+		}
 		if err := idx.Delete(key); err != nil {
 			t.Fatalf("Delete separator key %d: %v", key, err)
 		}
@@ -599,7 +662,10 @@ func TestInvariantsAfterInsert(t *testing.T) {
 				t.Errorf("leaf %d overflow: %d keys", leafID, n)
 			}
 			for i := 0; i < n; i++ {
-				key := leaf.GetKey(i)
+				key, err := leaf.GetKey(i)
+				if err != nil {
+					t.Fatalf("leaf %d key %d: %v", leaf.ID, i, err)
+				}
 				if i > 0 && key < lastKey {
 					t.Errorf("leaf %d: key %d < previous key %d", leafID, key, lastKey)
 				}

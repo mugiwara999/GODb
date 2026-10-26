@@ -87,7 +87,10 @@ func (ind *Index) RangeIterator(lower *uint64, lowerInclusive bool, upper *uint6
 		low, high := 0, leaf.GetNumKeys()
 		for low < high {
 			mid := low + (high-low)/2
-			key := leaf.GetKey(mid)
+			key, err := leaf.GetKey(mid)
+			if err != nil {
+				return nil, err
+			}
 			before := key < *lower || key == *lower && !lowerInclusive
 			if before {
 				low = mid + 1
@@ -133,7 +136,10 @@ func (ind *Index) RangeRIDIterator(lower *uint64, lowerInclusive bool, upper *ui
 		low, high := 0, leaf.GetNumKeys()
 		for low < high {
 			mid := low + (high-low)/2
-			key := leaf.GetKey(mid)
+			key, err := leaf.GetKey(mid)
+			if err != nil {
+				return nil, err
+			}
 			before := key < *lower || key == *lower && !lowerInclusive
 			if before {
 				low = mid + 1
@@ -254,7 +260,11 @@ func (it *RangeRIDIterator) Next() (entry RangeRIDEntry, ok bool, err error) {
 			it.keyIndex = 0
 			continue
 		}
-		key := it.leaf.GetKey(it.keyIndex)
+		key, err := it.leaf.GetKey(it.keyIndex)
+		if err != nil {
+			it.done = true
+			return RangeRIDEntry{}, false, err
+		}
 		if it.hasUpper && (key > it.upper || key == it.upper && !it.upperInclusive) {
 			it.done = true
 			return RangeRIDEntry{}, false, nil
@@ -286,7 +296,11 @@ func (it *RangeIterator) Next() (entry RangeEntry, ok bool, err error) {
 	}
 	for it.leaf != nil {
 		for it.keyIndex < it.leaf.GetNumKeys() {
-			key := it.leaf.GetKey(it.keyIndex)
+			key, err := it.leaf.GetKey(it.keyIndex)
+			if err != nil {
+				it.done = true
+				return RangeEntry{}, false, err
+			}
 			if it.hasUpper && (key > it.upper || key == it.upper && !it.upperInclusive) {
 				it.done = true
 				return RangeEntry{}, false, nil

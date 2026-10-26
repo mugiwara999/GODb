@@ -47,7 +47,10 @@ func (t *Table) validatePrimaryIndex() error {
 		}
 		visitedLeaves[leaf.ID] = true
 		for i := 0; i < leaf.GetNumKeys(); i++ {
-			key := leaf.GetKey(i)
+			key, err := leaf.GetKey(i)
+			if err != nil {
+				return fmt.Errorf("validate primary index for table %q: read key from leaf %d: %w", t.Name, leaf.ID, err)
+			}
 			rid := leaf.GetRID(i)
 			location := rowLocation{pageID: int(rid.GetPageID()), slotID: int(rid.GetSlotID())}
 			if previous, exists := entries[key]; exists {
@@ -175,7 +178,10 @@ func (t *Table) ValidateIndexes() error {
 		visitedKeys := make(map[uint64]struct{})
 		for leaf != nil {
 			for i := 0; i < leaf.GetNumKeys(); i++ {
-				key := leaf.GetKey(i)
+				key, err := leaf.GetKey(i)
+				if err != nil {
+					return fmt.Errorf("validate secondary index %q: read key from leaf %d: %w", column, leaf.ID, err)
+				}
 				wanted, exists := expected[key]
 				if !exists {
 					return fmt.Errorf("validate secondary index %q: unexpected key %d", column, key)

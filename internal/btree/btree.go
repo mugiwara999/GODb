@@ -106,9 +106,14 @@ func (b *BTreePage) ParentID() uint32 {
 	return id
 }
 
-func (b *BTreePage) findChild(key uint64) uint32 {
-
+func (b *BTreePage) findChild(key uint64) (uint32, error) {
+	if b == nil || b.NodeType() != InternalNode {
+		return 0, fmt.Errorf("search child in nil or non-internal page")
+	}
 	numKeys := b.GetNumKeys()
+	if numKeys > MaxKeysPerInternal {
+		return 0, fmt.Errorf("search child in page %d: corrupt key count %d", b.ID, numKeys)
+	}
 	low := uint32(0)
 	high := uint32(numKeys)
 
@@ -116,7 +121,11 @@ func (b *BTreePage) findChild(key uint64) uint32 {
 
 		mid := (low + high) / 2
 
-		if key < b.GetKey(int(mid)) {
+		midKey, err := b.GetKey(int(mid))
+		if err != nil {
+			return 0, err
+		}
+		if key < midKey {
 			high = mid
 		} else {
 			low = mid + 1
@@ -124,23 +133,32 @@ func (b *BTreePage) findChild(key uint64) uint32 {
 
 	}
 
-	return low
+	return low, nil
 }
 
-func SearchLeafPage(p *BTreePage, key uint64) (*RID, bool) {
+func SearchLeafPage(p *BTreePage, key uint64) (*RID, bool, error) {
+	if p == nil || p.NodeType() != LeafNode {
+		return nil, false, fmt.Errorf("search leaf in nil or non-leaf page")
+	}
 
 	numKeys := int(binary.LittleEndian.Uint16(p.Data[1:3]))
+	if numKeys > MaxKeysPerLeaf {
+		return nil, false, fmt.Errorf("search leaf page %d: corrupt key count %d", p.ID, numKeys)
+	}
 	low := 0
 	high := numKeys
 
 	for low < high {
 		mid := low + (high-low)/2
-		val := p.GetKey(mid)
+		val, err := p.GetKey(mid)
+		if err != nil {
+			return nil, false, err
+		}
 
 		if val == key {
 
 			id := p.GetRID(mid)
-			return id, true
+			return id, true, nil
 		} else if val < key {
 			low = mid + 1
 		} else {
@@ -149,27 +167,33 @@ func SearchLeafPage(p *BTreePage, key uint64) (*RID, bool) {
 
 	}
 
-	return nil, false
+	return nil, false, nil
 
 }
 
-func (b *BTreePage) GetKey(i int) uint64 {
-
-	HeaderSize := 11
-	EntrySize := 0
-
-	KeyOffset := LeafKeyOffset // InternalKeyOffset is also 8
-
-	if NodeType(b.Data[0]) == LeafNode {
-		EntrySize = LeafEntrySize
-	} else {
-		EntrySize = InternalEntrySize
+func (b *BTreePage) GetKey(i int) (uint64, error) {
+	if b == nil {
+		return 0, fmt.Errorf("get key: nil page")
 	}
-
-	offset := HeaderSize + EntrySize*i
-	val := binary.LittleEndian.Uint64(b.Data[offset : offset+KeyOffset])
-
-	return val
+	numKeys := b.GetNumKeys()
+	entrySize := 0
+	maxKeys := 0
+	switch b.NodeType() {
+	case LeafNode:
+		entrySize, maxKeys = LeafEntrySize, MaxKeysPerLeaf
+	case InternalNode:
+		entrySize, maxKeys = InternalEntrySize, MaxKeysPerInternal
+	default:
+		return 0, fmt.Errorf("get key from page %d: corrupt node type %d", b.ID, b.NodeType())
+	}
+	if numKeys > maxKeys {
+		return 0, fmt.Errorf("get key from page %d: corrupt key count %d", b.ID, numKeys)
+	}
+	if i < 0 || i >= numKeys {
+		return 0, fmt.Errorf("get key %d from page %d: index out of range [0, %d)", i, b.ID, numKeys)
+	}
+	offset := LeafHeaderSize + entrySize*i
+	return binary.LittleEndian.Uint64(b.Data[offset : offset+LeafKeyOffset]), nil
 }
 
 func (b *BTreePage) GetRID(i int) *RID {
@@ -347,7 +371,10 @@ func (b *BTreePage) moveHalfKeysToInternal(newPage *BTreePage) (uint64, error) {
 	numKeys := b.GetNumKeys()
 	half := numKeys / 2
 
-	ascendKey := b.GetKey(half)
+	ascendKey, err := b.GetKey(half)
+	if err != nil {
+		return 0, err
+	}
 
 	copy(newPage.Data[InternalHeaderSize:], b.Data[InternalHeaderSize+(half+1)*InternalEntrySize:InternalHeaderSize+numKeys*InternalEntrySize])
 
@@ -383,7 +410,11 @@ func (b *BTreePage) PrintPage() {
 	fmt.Println(numKeys)
 
 	for i := 0; i < numKeys; i++ {
-		key := b.GetKey(i)
+		key, err := b.GetKey(i)
+		if err != nil {
+			fmt.Printf("<invalid key: %v> ", err)
+			continue
+		}
 
 		fmt.Print(key, " ")
 

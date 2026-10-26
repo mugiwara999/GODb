@@ -258,7 +258,10 @@ func TestFailedInternalMergeRestoresChildParentsAndRoot(t *testing.T) {
 	if leftInternal.NodeType() != InternalNode || rightInternal.NodeType() != InternalNode || leftInternal.GetNumKeys() != MinKeysPerInternal || rightInternal.GetNumKeys() != MinKeysPerInternal {
 		t.Fatalf("prepared root children type/count = %d/%d and %d/%d", leftInternal.NodeType(), leftInternal.GetNumKeys(), rightInternal.NodeType(), rightInternal.GetNumKeys())
 	}
-	children, _ := readInternal(leftInternal)
+	children, _, err := readInternal(leftInternal)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var deleteKey uint64
 	found := false
 	for pos := 0; pos+1 < len(children); pos++ {
@@ -271,7 +274,10 @@ func TestFailedInternalMergeRestoresChildParentsAndRoot(t *testing.T) {
 			t.Fatal(err)
 		}
 		if leftLeaf.NodeType() == LeafNode && rightLeaf.NodeType() == LeafNode && leftLeaf.GetNumKeys() == MinKeysPerLeaf && rightLeaf.GetNumKeys() == MinKeysPerLeaf {
-			deleteKey = leftLeaf.GetKey(0)
+			deleteKey, err = leftLeaf.GetKey(0)
+			if err != nil {
+				t.Fatal(err)
+			}
 			found = true
 			break
 		}
