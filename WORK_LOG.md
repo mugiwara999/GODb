@@ -386,7 +386,7 @@
 - Regression coverage: candidate collection falls back after the cap and the resulting scan update affects all rows; existing tests cover indexed and unindexed update/delete, stale candidate rejection, rollback, reopen, and index validation.
 - Verification: full tests, build, vet, race tests for table/pager/B+ tree/WAL/parser/lexer/CLI, Windows and Solaris cross-builds, narrow/medium/broad benchmark, and `git diff --check` passed.
 - Limitations: `RangeIterator.Next` still materializes all RIDs for one duplicate key before this cap is checked, so one very large posting chain can still allocate substantially. Docker is Linux-only here; QEMU is installed, but no Windows or Solaris guest image is present under `/home/rahul`.
-- Commit: pending.
+- Commit: `ad1d4b4` (`Bound broad range mutation candidates`).
 
 ## Prioritized backlog
 
