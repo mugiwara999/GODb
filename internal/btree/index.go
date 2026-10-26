@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/mugiwara999/goDB/internal/openfile"
 	"github.com/mugiwara999/goDB/internal/wal"
 )
 
@@ -133,7 +134,7 @@ func NewIndexAt(tableName, colName, path string) (*Index, error) {
 
 func OpenIndex(tableName, colName string) (*Index, error) {
 	path := IndexPath(tableName, colName)
-	file, err := os.OpenFile(path, os.O_RDWR, 0644)
+	file, err := openfile.OpenReadWrite(path)
 	if err != nil {
 		return nil, fmt.Errorf("open index file for column %q: %v", colName, err)
 	}
