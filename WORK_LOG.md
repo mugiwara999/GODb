@@ -143,6 +143,7 @@
 - Limitations: the new hooks exercise journal record and sync ordering, but do not yet inject low-level table/index page write errors through the full `Table` mutation wrapper. Torn final commit framing is covered separately by `8ee6105`.
 - Commit: `9e27e0f` (`Inject WAL ordering failures in tests`).
 - Follow-up table integration: `794335f` (`Test rollback after partial table and index writes`) forces an error after the mutation wrapper has written both table metadata and an index leaf, then verifies restored ID/index state and full primary-index consistency. Targeted table/WAL tests, full `go test ./...`, `go build ./...`, `go vet ./...`, and `go test -race ./internal/table ./internal/wal` passed.
+- Follow-up page-write coverage: `49093cc` adds package-local partial-write injection for `Pager.Flush` and `Index.WritePage`, then verifies journal rollback restores exact original page bytes. It also fixes `Index.WritePage` to return `io.ErrShortWrite` when `WriteAt` reports a short successful write. Full `go test ./...`, `go build ./...`, `go vet ./...`, and race tests for pager/B+ tree/table/WAL passed. A concurrent verification run once caused the fixed-filename B+ tree tests from two test processes to collide; rerunning `go test ./...` alone passed.
 
 ## Prioritized backlog
 
