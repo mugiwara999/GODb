@@ -321,7 +321,7 @@
 - Regression coverage: empty, duplicate, Unicode, and long text; equality and missing-value queries; update/delete/reopen/drop; deterministic forced hash collisions; v1 table migration; metadata v4 catalog round trip; SQL create/query/drop.
 - Verification: full tests, build, vet, race tests for table/pager/B+ tree/WAL/CLI, Windows and Solaris cross-builds, and `git diff --check` passed.
 - Limitations: the current B+ tree remains a `uint64` bucket index, so collisions can increase candidate scans and TEXT indexes provide equality lookup only; rows are compared exactly before returning results.
-- Commit: pending.
+- Commit: `04b1157` (`Add exact text secondary indexes`).
 
 ## Prioritized backlog
 
