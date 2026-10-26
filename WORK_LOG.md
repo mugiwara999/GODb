@@ -217,7 +217,7 @@
 - Regression coverage: concurrent readers verify every page boundary remains associated with the requested page; concurrent writers update distinct pages and verify the final page contents; maximum-int page IDs are rejected without changing file size.
 - Verification: pager concurrency/overflow tests passed 20 repeated runs; `GOCACHE=/tmp/goDB-gocache go test -race ./internal/pager ./internal/table`, full `GOCACHE=/tmp/goDB-gocache go test ./...`, `GOCACHE=/tmp/goDB-gocache go build ./...`, `GOCACHE=/tmp/goDB-gocache go vet ./...`, Windows and Solaris cross-builds, and `git diff --check` passed.
 - Limitations: offset-safe I/O does not provide snapshot isolation if a writer changes a page while a reader is reading it; the existing README limitation remains.
-- Commit: pending.
+- Commit: `69688b0` (`Use offset-based pager page I/O`).
 
 ## Prioritized backlog
 
