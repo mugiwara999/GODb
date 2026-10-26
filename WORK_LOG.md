@@ -253,4 +253,4 @@
 
 ## Next action
 
-Next task: finish and commit the B+ tree posting-page layer after recording verification, then implement `Table.CreateIndex` for typed UINT64 columns with transactional backfill and mutation maintenance. Keep TEXT indexes out until a stable string-to-key representation is designed. Continue seeking runtime Windows/Solaris durability coverage. Preserve the supplied untracked `AGENTS.md`.
+Next task: implement `Table.CreateIndex` for typed UINT64 columns. Assessment found that `mutate` already enrolls every open index in the shared WAL, while SELECT currently uses only the primary ID index and scans other filters. Build under the table lock into a synced staging index, atomically publish it after backfill, then maintain indexed key/RID associations on insert, update, relocation, and delete. Add secondary-index consistency validation and equality lookup tests. Keep TEXT indexes out until a stable string-to-key representation is designed. Continue seeking runtime Windows/Solaris durability coverage. Preserve the supplied untracked `AGENTS.md`.
