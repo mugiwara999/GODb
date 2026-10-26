@@ -451,7 +451,7 @@
 - Regression coverage: shared helper tests verify a valid directory and rejection of a missing directory. Existing table, WAL, and command tests exercise creation/recovery through this helper.
 - Verification: full local tests, build, vet, and diff check passed; race tests for dirsync/WAL/table/CLI passed; Windows and Solaris package builds passed; affected Windows test binaries cross-compiled. Microsoft documentation confirms `FlushFileBuffers` requires a `GENERIC_WRITE` handle and that directory handles require `FILE_FLAG_BACKUP_SEMANTICS` ([FlushFileBuffers](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-flushfilebuffers), [directory handles](https://learn.microsoft.com/en-us/windows/win32/fileio/obtaining-a-handle-to-a-directory)). Hosted Windows CI must be rerun after this fix; no successful post-fix native run is claimed yet.
 - Limitations: when Windows/filesystem access denies directory flushing, parent-directory metadata durability remains best-effort; Solaris runtime behavior remains unverified.
-- Commit: to be recorded after commit.
+- Commit: `726aa61` (`Handle Windows directory sync limitations`).
 
 ## Prioritized backlog
 
