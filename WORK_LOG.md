@@ -581,9 +581,9 @@
 
 - Finding: Windows used the fallback in-process mutex for table locks, so two goDB processes could concurrently recover or mutate the same table and indexes without coordination. Windows is a supported hosted CI target, making this a storage-integrity gap rather than an untested platform detail.
 - Changes: added a Windows `LockFileEx` exclusive byte-range lock on the persistent `.lock` file, retaining a per-path process mutex for goroutines in the same process. Added a Windows child-process regression test that verifies a second process blocks until the first releases the lock. The generic fallback now excludes Windows; Solaris and other unsupported targets retain their documented process-local fallback.
-- Verification: Linux full tests, build, vet, filelock/table race tests, and Windows/Solaris cross-target test-binary checks passed. The Windows child-process test compiles but requires hosted native Windows CI to execute; hosted run will follow the push.
+- Verification: Linux full tests, build, vet, filelock/table race tests, and Windows/Solaris cross-target test-binary checks passed. Hosted run `40279746786` passed full tests, build, and vet on Ubuntu and Windows, including the native Windows child-process lock test.
 - Limitations: Solaris/illumos still has only process-local locking until a native implementation or runtime is available. Windows lock behavior is guarded by a process-level regression test and hosted CI.
-- Commit: pending.
+- Commit: `19e5c33` (`Add cross-process Windows file locks`).
 
 ## Prioritized backlog
 
@@ -593,4 +593,4 @@
 
 ## Next action
 
-Next action: push the Windows lock change, confirm the native child-process regression passes in hosted CI, and then assess the durable read-epoch design against table/file-lock and refresh paths before attempting shared reads. Count setters are committed at `c4c5612`; leaf/posting links at `dca4a37`; parent pointers at `35a6a0c`; checked key-count reads at `b1ea467`; page accessor fuzzing at `7dcf560`; cross-page validation fuzzing at `e605cf5`; WAL parsing fuzzing at `b1d9bc7`. Hosted runs `40278741815`, `40278761020`, and `40279132863` passed on Ubuntu and Windows. Preserve the supplied untracked `AGENTS.md`. Separately continue seeking a usable Solaris/illumos runtime.
+Next action: assess the durable read-epoch design against the current table/file-lock and refresh paths before attempting shared reads. Count setters are committed at `c4c5612`; leaf/posting links at `dca4a37`; parent pointers at `35a6a0c`; checked key-count reads at `b1ea467`; page accessor fuzzing at `7dcf560`; cross-page validation fuzzing at `e605cf5`; WAL parsing fuzzing at `b1d9bc7`; Windows cross-process locking at `19e5c33`. Hosted runs `40278741815`, `40278761020`, `40279132863`, and `40279746786` passed on Ubuntu and Windows. Preserve the supplied untracked `AGENTS.md`. Separately continue seeking a usable Solaris/illumos runtime.
