@@ -189,8 +189,8 @@
 - Priority: portability and platform correctness. `lock_unix.go` excludes Solaris, while `lock_other.go` also excluded it, leaving the package with no buildable implementation on Solaris.
 - Changes: made the fallback lock build constraint the complement of the supported `flock` targets, so Solaris and other remaining platforms use the documented process-local mutex. Added fallback-lock serialization coverage and documented the exact advisory-lock targets plus runtime durability verification scope in README.
 - Regression coverage: fallback lock test verifies a second same-process acquisition blocks until the first lock closes. Linux tests pass; Solaris full build and filelock test binary cross-compile; Windows full build passes.
-- Verification: `GOCACHE=/tmp/goDB-gocache go test ./internal/filelock`, full `GOCACHE=/tmp/goDB-gocache go test ./...`, `GOOS=solaris GOARCH=amd64 GOCACHE=/tmp/goDB-gocache go build ./...`, `GOOS=solaris GOARCH=amd64 GOCACHE=/tmp/goDB-gocache go test -c -o /tmp/goDB-filelock-solaris.test ./internal/filelock`, `GOOS=windows GOARCH=amd64 GOCACHE=/tmp/goDB-gocache go build ./...`, and `git diff --check` passed.
-- Limitations: runtime tests were available only on Linux. Cross-compilation proves the Solaris fallback builds but does not validate directory-sync behavior or crash durability on Solaris or Windows.
+- Verification: `GOCACHE=/tmp/goDB-gocache go test ./internal/filelock`, full `GOCACHE=/tmp/goDB-gocache go test ./...`, `GOOS=solaris GOARCH=amd64 GOCACHE=/tmp/goDB-gocache go build ./...`, `GOOS=solaris GOARCH=amd64 GOCACHE=/tmp/goDB-gocache go test -c -o /tmp/goDB-filelock-solaris.test ./internal/filelock`, `GOOS=windows GOARCH=amd64 GOCACHE=/tmp/goDB-gocache go build ./...`, cross-builds for Darwin, FreeBSD, DragonFly, NetBSD, OpenBSD, AIX, and Plan 9, and `git diff --check` passed.
+- Limitations: runtime tests were available only on Linux. Cross-compilation proves the lock implementations build across the tested targets but does not validate directory-sync behavior or crash durability outside Linux.
 - Commit: `8983652` (`Restore Solaris build using fallback locks`).
 
 ## Prioritized backlog
