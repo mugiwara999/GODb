@@ -241,10 +241,10 @@
 
 - Priority: index correctness foundation. Secondary indexes need to map repeated typed values to multiple row locations; changing leaf/internal separators to duplicate keys would weaken routing and range invariants. Posting pages preserve one tree entry per distinct key.
 - Design and changes: added a posting-page type with packed RIDs and a linked-page pointer. A leaf RID with reserved slot ID `0xffff` points to the chain; ordinary insert/update/delete APIs reject or handle that marker explicitly. Added `InsertDuplicate`, `FindAll`, and `DeleteRID`; duplicate pages use the existing allocator/free list, while validation checks page ownership, chain bounds/cycles, counts, and duplicate RIDs. Existing unique leaf and internal page layouts remain unchanged.
-- Regression coverage: duplicate chains spanning multiple pages, duplicate RID rejection, unique-insert duplicate rejection, reopen, `FindAll`, shrink-to-one and delete-to-zero, free-page reuse, whole-key deletion, validation, and WAL rollback after a partial leaf write.
+- Regression coverage: duplicate chains spanning multiple pages, duplicate RID rejection, unique-insert duplicate rejection, reopen, `FindAll`, shrink-to-one and delete-to-zero, free-page reuse, whole-key deletion, corrupt-cycle detection, validation, and WAL rollback after a partial leaf write.
 - Verification: targeted posting-chain tests; full `GOCACHE=/tmp/goDB-gocache go test ./...`, `go build ./...`, `go vet ./...`, race tests for B+ tree/WAL/table, Windows and Solaris cross-builds, and `git diff --check` passed.
 - Limitations: APIs are currently B+ tree-level only; table secondary-index creation and mutation maintenance are not integrated. The reserved marker relies on the table pager's practical slot-count bound; callers cannot use slot ID `0xffff` in the B+ tree API. TEXT keys still need stable encoding.
-- Commit: pending.
+- Commit: `5b3cfce` (`Add duplicate key posting lists`).
 
 ## Prioritized backlog
 
