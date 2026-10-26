@@ -366,7 +366,7 @@
 - Baseline on Linux/amd64, 13th Gen Intel Core i5-13500H, `-benchtime=200ms -count=3 -cpu=1`: scan 1.35–1.69 ms/op and about 667 KB/op; secondary index present 1.34–1.48 ms/op and about 672 KB/op. The index-present result does not improve selection cost.
 - Verification: `go test ./internal/table` and `git diff --check` passed; benchmark command completed three samples per variant.
 - Next: use the range index to collect mutation candidates before changing pages/indexes, retain scan fallback, and compare against this benchmark. Validate indexed entries against stored rows and test partial-write rollback.
-- Commit: pending.
+- Commit: `9e09c71` (`Benchmark range update scans`).
 
 ## Prioritized backlog
 
