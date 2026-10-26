@@ -4,7 +4,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strconv"
 	"testing"
 
 	"github.com/mugiwara999/goDB/internal/btree"
@@ -258,14 +257,14 @@ func TestRangeMutationCandidateLimitFallsBackToScan(t *testing.T) {
 	}
 	defer tbl.Close()
 	for i := 0; i <= maxRangeMutationIndexCandidates; i++ {
-		if err := tbl.Insert([]string{strconv.Itoa(i), "old"}); err != nil {
+		if err := tbl.Insert([]string{"7", "old"}); err != nil {
 			t.Fatalf("Insert(%d): %v", i, err)
 		}
 	}
 	if err := tbl.CreateIndex("age"); err != nil {
 		t.Fatal(err)
 	}
-	lower, upper := uint64(0), uint64(maxRangeMutationIndexCandidates)
+	lower, upper := uint64(7), uint64(7)
 	selectedRange := Uint64Range{ColIdx: 1, Lower: &lower, LowerInclusive: true, Upper: &upper, UpperInclusive: true}
 	candidates, indexed, err := tbl.rangeMutationCandidates(selectedRange, nil, "test")
 	if err != nil || indexed || len(candidates) != 0 {

@@ -75,7 +75,7 @@ func (t *Table) rangeMutationCandidates(selectedRange Uint64Range, filters []Col
 	if index == nil {
 		return nil, false, nil
 	}
-	iterator, err := index.RangeIterator(selectedRange.Lower, selectedRange.LowerInclusive, selectedRange.Upper, selectedRange.UpperInclusive)
+	iterator, err := index.RangeRIDIterator(selectedRange.Lower, selectedRange.LowerInclusive, selectedRange.Upper, selectedRange.UpperInclusive)
 	if err != nil {
 		return nil, true, fmt.Errorf("%s table %q range index %q: %w", operation, t.Name, t.cols[selectedRange.ColIdx], err)
 	}
@@ -90,51 +90,50 @@ func (t *Table) rangeMutationCandidates(selectedRange Uint64Range, filters []Col
 		if !ok {
 			break
 		}
-		if len(entry.RIDs) > maxRangeMutationIndexCandidates-len(seen) {
+		if len(seen) >= maxRangeMutationIndexCandidates {
 			// Avoid retaining a large candidate set alongside the pending
 			// mutation; the caller can process this range with the table scan.
 			return nil, false, nil
 		}
-		for _, rid := range entry.RIDs {
-			pageID, slotID := rid.GetPageID(), rid.GetSlotID()
-			ridKey := uint64(pageID)<<16 | uint64(slotID)
-			if _, exists := seen[ridKey]; exists {
-				return nil, true, fmt.Errorf("%s table %q range index %q contains duplicate row location (%d,%d)", operation, t.Name, t.cols[selectedRange.ColIdx], pageID, slotID)
-			}
-			seen[ridKey] = struct{}{}
-			page := pages[pageID]
-			if page == nil {
-				page, err = t.Pager.GetPage(int(pageID))
-				if err != nil {
-					return nil, true, fmt.Errorf("%s table %q range index %q points to invalid page %d: %w", operation, t.Name, t.cols[selectedRange.ColIdx], pageID, err)
-				}
-				pages[pageID] = page
-			}
-			data, err := page.GetRow(int(slotID))
+		rid := entry.RID
+		pageID, slotID := rid.GetPageID(), rid.GetSlotID()
+		ridKey := uint64(pageID)<<16 | uint64(slotID)
+		if _, exists := seen[ridKey]; exists {
+			return nil, true, fmt.Errorf("%s table %q range index %q contains duplicate row location (%d,%d)", operation, t.Name, t.cols[selectedRange.ColIdx], pageID, slotID)
+		}
+		seen[ridKey] = struct{}{}
+		page := pages[pageID]
+		if page == nil {
+			page, err = t.Pager.GetPage(int(pageID))
 			if err != nil {
-				return nil, true, fmt.Errorf("%s table %q range index %q points to invalid row (%d,%d): %w", operation, t.Name, t.cols[selectedRange.ColIdx], pageID, slotID, err)
+				return nil, true, fmt.Errorf("%s table %q range index %q points to invalid page %d: %w", operation, t.Name, t.cols[selectedRange.ColIdx], pageID, err)
 			}
-			row, err := t.decodeRow(data)
-			if err != nil {
-				return nil, true, fmt.Errorf("%s table %q range index %q points to corrupt row: %w", operation, t.Name, t.cols[selectedRange.ColIdx], err)
+			pages[pageID] = page
+		}
+		data, err := page.GetRow(int(slotID))
+		if err != nil {
+			return nil, true, fmt.Errorf("%s table %q range index %q points to invalid row (%d,%d): %w", operation, t.Name, t.cols[selectedRange.ColIdx], pageID, slotID, err)
+		}
+		row, err := t.decodeRow(data)
+		if err != nil {
+			return nil, true, fmt.Errorf("%s table %q range index %q points to corrupt row: %w", operation, t.Name, t.cols[selectedRange.ColIdx], err)
+		}
+		value, err := strconv.ParseUint(row[selectedRange.ColIdx], 10, 64)
+		if err != nil || value != entry.Key {
+			return nil, true, fmt.Errorf("%s table %q range index %q has stale key %d at row value %q", operation, t.Name, t.cols[selectedRange.ColIdx], entry.Key, row[selectedRange.ColIdx])
+		}
+		matches := true
+		for _, filter := range filters {
+			if row[filter.ColIdx] != filter.Value {
+				matches = false
+				break
 			}
-			value, err := strconv.ParseUint(row[selectedRange.ColIdx], 10, 64)
-			if err != nil || value != entry.Key {
-				return nil, true, fmt.Errorf("%s table %q range index %q has stale key %d at row value %q", operation, t.Name, t.cols[selectedRange.ColIdx], entry.Key, row[selectedRange.ColIdx])
-			}
-			matches := true
-			for _, filter := range filters {
-				if row[filter.ColIdx] != filter.Value {
-					matches = false
-					break
-				}
-			}
-			if matches {
-				candidates = append(candidates, rangeMutationCandidate{
-					info: pager.RowItInfo{PageID: int(pageID), SlotID: int(slotID)},
-					row:  row,
-				})
-			}
+		}
+		if matches {
+			candidates = append(candidates, rangeMutationCandidate{
+				info: pager.RowItInfo{PageID: int(pageID), SlotID: int(slotID)},
+				row:  row,
+			})
 		}
 	}
 	return candidates, true, nil

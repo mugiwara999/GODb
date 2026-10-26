@@ -48,3 +48,99 @@ func BenchmarkIndexFind(b *testing.B) {
 		}
 	}
 }
+
+func BenchmarkIndexRangeDuplicateRIDs(b *testing.B) {
+	for _, streaming := range []bool{false, true} {
+		name := "batch"
+		if streaming {
+			name = "stream"
+		}
+		b.Run(name, func(b *testing.B) {
+			const totalRIDs = 10000
+			idx := benchmarkDuplicateIndex(b, totalRIDs)
+			lower, upper := uint64(7), uint64(7)
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				count := 0
+				if streaming {
+					it, err := idx.RangeRIDIterator(&lower, true, &upper, true)
+					if err != nil {
+						b.Fatal(err)
+					}
+					for {
+						_, ok, err := it.Next()
+						if err != nil {
+							b.Fatal(err)
+						}
+						if !ok {
+							break
+						}
+						count++
+					}
+				} else {
+					it, err := idx.RangeIterator(&lower, true, &upper, true)
+					if err != nil {
+						b.Fatal(err)
+					}
+					entry, ok, err := it.Next()
+					if err != nil {
+						b.Fatal(err)
+					}
+					if ok {
+						count = len(entry.RIDs)
+					}
+				}
+				if count != totalRIDs {
+					b.Fatalf("range returned %d RIDs, want %d", count, totalRIDs)
+				}
+			}
+		})
+	}
+}
+
+func benchmarkDuplicateIndex(b *testing.B, totalRIDs int) *Index {
+	b.Helper()
+	idx := benchmarkIndex(b, "range_duplicates")
+	if err := idx.Insert(7, 0, 1); err != nil {
+		b.Fatal(err)
+	}
+	_, leaf, err := idx.FindLeaf(7)
+	if err != nil {
+		b.Fatal(err)
+	}
+	var head, tail *BTreePage
+	for offset := 0; offset < totalRIDs; {
+		page, err := idx.NewPostingPage()
+		if err != nil {
+			b.Fatal(err)
+		}
+		count := totalRIDs - offset
+		if count > MaxRIDsPerPosting {
+			count = MaxRIDsPerPosting
+		}
+		page.SetPostingCount(uint16(count))
+		for i := 0; i < count; i++ {
+			n := offset + i
+			page.SetPostingRID(i, RID{pageID: uint32(n + 10), slotID: uint16(n % MaxRIDsPerPosting)})
+		}
+		if err := idx.WritePage(page); err != nil {
+			b.Fatal(err)
+		}
+		if tail == nil {
+			head = page
+		} else {
+			tail.SetNextPostingPage(page.ID)
+			if err := idx.WritePage(tail); err != nil {
+				b.Fatal(err)
+			}
+		}
+		tail = page
+		offset += count
+	}
+	leaf.SetRID(0, RID{pageID: head.ID, slotID: PostingMarkerSlot})
+	if err := idx.WritePage(leaf); err != nil {
+		b.Fatal(err)
+	}
+	return idx
+}

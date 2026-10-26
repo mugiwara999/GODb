@@ -561,6 +561,28 @@ func TestDuplicatePostingChainsReopenDeleteAndReusePages(t *testing.T) {
 	if count, err := index.CountAll(42); err != nil || count != uint64(total) {
 		t.Fatalf("CountAll = %d, %v; want %d", count, err, total)
 	}
+	rangeKey := uint64(42)
+	ridIterator, err := index.RangeRIDIterator(&rangeKey, true, &rangeKey, true)
+	if err != nil {
+		t.Fatalf("RangeRIDIterator: %v", err)
+	}
+	streamed := 0
+	for {
+		entry, ok, err := ridIterator.Next()
+		if err != nil {
+			t.Fatalf("RangeRIDIterator.Next: %v", err)
+		}
+		if !ok {
+			break
+		}
+		if entry.Key != rangeKey {
+			t.Fatalf("streamed key = %d, want %d", entry.Key, rangeKey)
+		}
+		streamed++
+	}
+	if streamed != total {
+		t.Fatalf("RangeRIDIterator returned %d RIDs, want %d", streamed, total)
+	}
 	first, err := index.Find(42)
 	if err != nil || first.GetPageID() != 100 || first.GetSlotID() != 1 {
 		t.Fatalf("Find first RID = %v, %v; want (100,1)", first, err)
@@ -691,6 +713,25 @@ func TestRangeIteratorBoundsAcrossLeavesAndDuplicatePostings(t *testing.T) {
 	if count != 1000 {
 		t.Fatalf("unbounded range returned %d keys, want 1000", count)
 	}
+
+	ridIterator, err := index.RangeRIDIterator(&lower, true, &upper, false)
+	if err != nil {
+		t.Fatalf("RangeRIDIterator: %v", err)
+	}
+	keyCounts := map[uint64]int{}
+	for {
+		entry, ok, err := ridIterator.Next()
+		if err != nil {
+			t.Fatalf("RangeRIDIterator.Next: %v", err)
+		}
+		if !ok {
+			break
+		}
+		keyCounts[entry.Key]++
+	}
+	if keyCounts[250] != 5 || keyCounts[251] != 1 || keyCounts[252] != 1 || len(keyCounts) != 3 {
+		t.Fatalf("RangeRIDIterator key counts = %v; want {250:5, 251:1, 252:1}", keyCounts)
+	}
 }
 
 func TestDuplicatePostingMutationRollsBackWithWAL(t *testing.T) {
@@ -769,6 +810,18 @@ func TestValidateRejectsCorruptDuplicatePostingCycle(t *testing.T) {
 	}
 	if _, err := index.CountAll(9); err == nil || !strings.Contains(err.Error(), "cycle") {
 		t.Fatalf("CountAll error = %v, want posting cycle error", err)
+	}
+	cycleIterator, err := index.RangeRIDIterator(nil, false, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if _, ok, err := cycleIterator.Next(); err != nil || !ok {
+			t.Fatalf("RangeRIDIterator.Next(%d) = ok:%t err:%v; want one posting RID", i, ok, err)
+		}
+	}
+	if _, ok, err := cycleIterator.Next(); err == nil || !strings.Contains(err.Error(), "cycle") || ok {
+		t.Fatalf("RangeRIDIterator cycle error = ok:%t err:%v", ok, err)
 	}
 	if err := index.Validate(); err == nil || !strings.Contains(err.Error(), "cycle") {
 		t.Fatalf("Validate error = %v, want posting cycle error", err)
