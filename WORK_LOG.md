@@ -433,7 +433,7 @@
 - Regression coverage: rejected nil pages, internal and invalid node types, negative/past-capacity/MaxInt indexes, and corrupt key counts; each failure is checked for no page mutation. The last physical leaf slot still round-trips key and RID data.
 - Verification: targeted B+ tree tests passed; full `GOCACHE=/tmp/goDB-gocache go test ./... -count=1`, build, vet, and `git diff --check` passed. `go test -race ./internal/btree ./internal/table -count=1` passed. Windows and Solaris test binaries for all packages cross-compiled with `CGO_ENABLED=0`.
 - Limitations: key/RID getters and the overlapping leaf/internal pointer setters remain unchecked; continue the page accessor audit before treating malformed direct page access as panic-safe.
-- Commit: `49e1d72` (`Bounds-check B-tree leaf setters`).
+- Commit: `245fb5b` (`Bounds-check B-tree leaf setters`).
 
 ## Prioritized backlog
 
