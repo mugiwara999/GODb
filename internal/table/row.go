@@ -367,10 +367,16 @@ func (t *Table) selectRows(columns []string, colEquals []ColEq) ([][]string, err
 		if err != nil {
 			return nil, fmt.Errorf("select from table %q index %q: %w", t.Name, t.cols[filter.ColIdx], err)
 		}
+		pages := make(map[uint32]*pager.Page)
 		for _, rid := range rids {
-			page, err := t.Pager.GetPage(int(rid.GetPageID()))
-			if err != nil {
-				return nil, fmt.Errorf("select from table %q index %q points to invalid page %d: %w", t.Name, t.cols[filter.ColIdx], rid.GetPageID(), err)
+			pageID := rid.GetPageID()
+			page := pages[pageID]
+			if page == nil {
+				page, err = t.Pager.GetPage(int(pageID))
+				if err != nil {
+					return nil, fmt.Errorf("select from table %q index %q points to invalid page %d: %w", t.Name, t.cols[filter.ColIdx], pageID, err)
+				}
+				pages[pageID] = page
 			}
 			rowData, err := page.GetRow(int(rid.GetSlotID()))
 			if err != nil {

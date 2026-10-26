@@ -291,12 +291,21 @@
 - Limitations: injected tests verify application recovery semantics on Linux, not each target filesystem's actual unlink and directory-sync guarantees.
 - Commit: `2bc9cd0` (`Test secondary index removal failures`).
 
+### Benchmark and cache secondary-index reads
+
+- Priority: query performance. No table-level secondary-index benchmarks existed, and indexed lookup loaded and validated a table page separately for every RID in a posting list.
+- Changes: added indexed-versus-scan benchmarks for single-match and 512-match posting chains, plus parallel-reader benchmarks. Indexed SELECT now caches each touched table page for the duration of the query; the table lock keeps that image stable while the cache is used.
+- Benchmark evidence on Linux/amd64, 13th Gen Intel Core i5-13500H, `-benchtime=100ms -cpu=1,4`: the 512-match indexed case improved from 6.46 ms and 9.23 MB/op to 0.42 ms and 279 KB/op. The single-match case measured 46 µs / 83 KB versus a table scan at 0.83 ms / 320 KB. Four-CPU parallel indexed reads measured 108 µs/op versus 57 µs/op at one CPU, so contention remains measurable; these short local runs are directional rather than stable performance claims.
+- Verification: full tests, build, vet, race tests for table/WAL/B+ tree/pager, Windows and Solaris cross-builds, targeted benchmarks, and `git diff --check` passed.
+- Limitations: SELECT remains exclusive and readers serialize. Benchmark setup is excluded from operation timing; environment and 100 ms sample durations limit precision.
+- Commit: pending.
+
 ## Prioritized backlog
 
 1. **Run storage durability tests on Windows and Solaris.** Creation, WAL, table/index lifecycle, and directory sync have runtime verification only on Linux; this host has no Windows/Solaris runtime or guest images. Solaris uses a process-local lock fallback. Dependencies: native or emulated test environments. Risks: directory-sync, rename, unlink, and lock behavior differs; cross-builds and injected Linux failures do not prove power-loss guarantees. Acceptance: run table/index creation and removal, interrupted-create recovery, WAL begin/rollback/recovery, and lock tests on each OS; document unsupported semantics or return clear errors if required primitives fail. Tests needed: native runtime coverage of those paths on Windows and Solaris.
 2. **Design TEXT secondary-key encoding.** Current index pages and posting APIs accept `uint64`; converting arbitrary text with a hash would introduce collisions and ordering surprises. Choose an exact encoding or a separate key representation before text index support. Acceptance: exact equality semantics without collision-based false positives, documented ordering, and tested persistence compatibility. Tests needed: empty/long text, Unicode byte sequences, collision cases if hashing is used, reopen, and duplicate postings.
-3. **Measure and improve indexed query cost.** The current benchmark suite covers primary-index lookups but not non-unique posting chains or the exclusive SELECT lock. Add benchmarks before choosing a finer-grained read-lock design. Acceptance: reproducible indexed versus scan measurements across cardinalities and duplicate distributions. Tests/benchmarks needed: low/high selectivity, multi-page posting chains, concurrent read workloads, and allocation counts.
+3. **Evaluate shared read locking.** SELECT now refreshes catalog and WAL state under an exclusive table lock, which guarantees coherent queries but serializes readers. New benchmarks show query and parallel-reader baselines; a shared-lock design must still coordinate recovery, handle refresh, and local pager/index state. Acceptance: concurrent reads can overlap safely while cooperating writers remain excluded and all existing-handle refresh semantics hold. Tests/benchmarks needed: process-level readers and writers, race tests, crash-recovery interaction, and before/after parallel query throughput.
 
 ## Next action
 
-Next task: benchmark duplicate-index queries and SELECT lock contention to determine whether exclusive read locking needs redesign. Continue seeking a Windows/Solaris runtime for durability tests. Preserve the supplied untracked `AGENTS.md`.
+Next task: assess a shared-read-lock design against the new benchmark baseline, including recovery and refresh coordination risks, before changing lock semantics. Continue seeking a Windows/Solaris runtime for durability tests. Preserve the supplied untracked `AGENTS.md`.
