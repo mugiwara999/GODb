@@ -3,11 +3,15 @@ package btree
 import (
 	"encoding/binary"
 	"errors"
+	"io"
 	"math/rand"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
+
+	"github.com/mugiwara999/goDB/internal/wal"
 )
 
 func withIndex(t *testing.T, colName string, fn func(*Index)) {
@@ -511,4 +515,166 @@ func TestRootSplit(t *testing.T) {
 			t.Errorf("root page ID mismatch: got %d, want %d", root.ID, idx.rootPageID)
 		}
 	})
+}
+
+func TestDuplicatePostingChainsReopenDeleteAndReusePages(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("DATA_DIR", dir)
+	index, err := NewIndex("duplicate_postings", "age")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := index.Insert(42, 100, 1); err != nil {
+		t.Fatalf("Insert first RID: %v", err)
+	}
+	total := MaxRIDsPerPosting + 3
+	for n := 1; n < total; n++ {
+		if err := index.InsertDuplicate(42, uint32(100+n), uint16(n+1)); err != nil {
+			t.Fatalf("InsertDuplicate %d: %v", n, err)
+		}
+	}
+	if err := index.InsertDuplicate(42, 100, 1); !errors.Is(err, ErrDuplicateRID) {
+		t.Fatalf("duplicate RID error = %v, want ErrDuplicateRID", err)
+	}
+	if err := index.Insert(42, 9999, 1); err == nil {
+		t.Fatal("unique Insert accepted duplicate key")
+	}
+	if err := index.Validate(); err != nil {
+		t.Fatalf("Validate populated posting chain: %v", err)
+	}
+	pageCount := index.GetNumPages()
+	if err := index.Close(); err != nil {
+		t.Fatal(err)
+	}
+	index, err = OpenIndex("duplicate_postings", "age")
+	if err != nil {
+		t.Fatalf("OpenIndex: %v", err)
+	}
+	defer index.Close()
+	rids, err := index.FindAll(42)
+	if err != nil {
+		t.Fatalf("FindAll after reopen: %v", err)
+	}
+	if len(rids) != total {
+		t.Fatalf("FindAll returned %d RIDs, want %d", len(rids), total)
+	}
+	first, err := index.Find(42)
+	if err != nil || first.GetPageID() != 100 || first.GetSlotID() != 1 {
+		t.Fatalf("Find first RID = %v, %v; want (100,1)", first, err)
+	}
+	for n := 0; n < total-1; n++ {
+		if err := index.DeleteRID(42, rids[n].GetPageID(), rids[n].GetSlotID()); err != nil {
+			t.Fatalf("DeleteRID %d: %v", n, err)
+		}
+	}
+	remaining, err := index.FindAll(42)
+	if err != nil || len(remaining) != 1 || remaining[0].GetPageID() != rids[total-1].GetPageID() {
+		t.Fatalf("FindAll after shrinking chain = %v, %v", remaining, err)
+	}
+	if err := index.Validate(); err != nil {
+		t.Fatalf("Validate after shrinking chain: %v", err)
+	}
+	if err := index.DeleteRID(42, remaining[0].GetPageID(), remaining[0].GetSlotID()); err != nil {
+		t.Fatalf("Delete last RID: %v", err)
+	}
+	if _, err := index.FindAll(42); !errors.Is(err, ErrKeyNotFound) {
+		t.Fatalf("FindAll after deleting key = %v, want ErrKeyNotFound", err)
+	}
+	if err := index.Validate(); err != nil {
+		t.Fatalf("Validate after deleting key: %v", err)
+	}
+	if err := index.InsertDuplicate(84, 300, 1); err != nil {
+		t.Fatalf("InsertDuplicate new key: %v", err)
+	}
+	if err := index.InsertDuplicate(84, 301, 1); err != nil {
+		t.Fatalf("InsertDuplicate duplicate key: %v", err)
+	}
+	if got := index.GetNumPages(); got > pageCount {
+		t.Fatalf("posting page was not reused: page count %d grew beyond %d", got, pageCount)
+	}
+	if err := index.Delete(84); err != nil {
+		t.Fatalf("Delete duplicate key and postings: %v", err)
+	}
+	if err := index.Validate(); err != nil {
+		t.Fatalf("Validate after page reuse and duplicate deletion: %v", err)
+	}
+}
+
+func TestDuplicatePostingMutationRollsBackWithWAL(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("DATA_DIR", dir)
+	index, err := NewIndex("duplicate_posting_wal", "age")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer index.Close()
+	if err := index.Insert(7, 20, 3); err != nil {
+		t.Fatal(err)
+	}
+	journal, err := wal.Begin(index.path + ".wal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	index.SetJournal(journal)
+	writes := 0
+	index.writeAtFn = func(data []byte, offset int64) (int, error) {
+		writes++
+		if writes == 3 {
+			return index.file.WriteAt(data[:len(data)/2], offset)
+		}
+		return index.file.WriteAt(data, offset)
+	}
+	if err := index.InsertDuplicate(7, 21, 4); !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("InsertDuplicate error = %v, want io.ErrShortWrite (writes %d)", err, writes)
+	}
+	if err := journal.Rollback(); err != nil {
+		t.Fatalf("Rollback: %v", err)
+	}
+	index.SetJournal(nil)
+	index.writeAtFn = nil
+	if err := index.Refresh(); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	rids, err := index.FindAll(7)
+	if err != nil || len(rids) != 1 || rids[0].GetPageID() != 20 || rids[0].GetSlotID() != 3 {
+		t.Fatalf("FindAll after rollback = %v, %v", rids, err)
+	}
+	if err := index.Validate(); err != nil {
+		t.Fatalf("Validate after rollback: %v", err)
+	}
+}
+
+func TestValidateRejectsCorruptDuplicatePostingCycle(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("DATA_DIR", dir)
+	index, err := NewIndex("duplicate_posting_cycle", "age")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer index.Close()
+	if err := index.Insert(9, 30, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := index.InsertDuplicate(9, 31, 1); err != nil {
+		t.Fatal(err)
+	}
+	_, leaf, err := index.FindLeaf(9)
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := leaf.GetRID(0)
+	if marker.slotID != PostingMarkerSlot {
+		t.Fatalf("leaf RID slot = %d, want posting marker", marker.slotID)
+	}
+	posting, err := index.GetPage(marker.pageID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	posting.SetNextPostingPage(posting.ID)
+	if err := index.WritePage(posting); err != nil {
+		t.Fatal(err)
+	}
+	if err := index.Validate(); err == nil || !strings.Contains(err.Error(), "cycle") {
+		t.Fatalf("Validate error = %v, want posting cycle error", err)
+	}
 }

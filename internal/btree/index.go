@@ -29,6 +29,7 @@ const (
 
 var ErrKeyNotFound = errors.New("key not found")
 var ErrDuplicateKey = errors.New("duplicate key")
+var ErrDuplicateRID = errors.New("duplicate RID")
 
 // leaf node layout
 // Byte 0:      nodeType (1 = leaf)
@@ -45,6 +46,9 @@ var ErrDuplicateKey = errors.New("duplicate key")
 // Bytes 11+:   [key: 8 bytes][rightChildPageID: 4 bytes] × numKeys
 
 // if a key is equal to the key in an internal node, we go to the right child page
+
+// Duplicate keys keep one leaf entry. Its RID uses slot ID 0xffff as a marker,
+// and the page ID points to a chain of PostingNode pages containing the RIDs.
 
 // index meta page layout
 // Bytes 0 - 3:      rootPageID (4 bytes)
@@ -272,6 +276,17 @@ func (ind *Index) NewInternalPage() (*BTreePage, error) {
 
 }
 
+func (ind *Index) NewPostingPage() (*BTreePage, error) {
+	page, err := ind.allocatePage(PostingNode)
+	if err != nil {
+		return nil, err
+	}
+	page.Data[0] = byte(PostingNode)
+	page.SetPostingCount(0)
+	page.SetNextPostingPage(0)
+	return page, nil
+}
+
 func (ind *Index) allocatePage(nodeType NodeType) (*BTreePage, error) {
 	var pageID uint32
 	if ind.freePageID != 0 {
@@ -307,8 +322,12 @@ func (ind *Index) allocatePage(nodeType NodeType) (*BTreePage, error) {
 	page := &BTreePage{ID: pageID}
 	if nodeType == LeafNode {
 		InitLeafPage(page)
-	} else {
+	} else if nodeType == InternalNode {
 		InitInternalPage(page)
+	} else if nodeType == PostingNode {
+		page.Data[0] = byte(PostingNode)
+	} else {
+		return nil, fmt.Errorf("cannot allocate page with node type %d", nodeType)
 	}
 	return page, nil
 }
@@ -452,6 +471,9 @@ func (ind *Index) FindLeaf(key uint64) (searchPath []uint32, page *BTreePage, er
 }
 
 func (ind *Index) Insert(key uint64, pageID uint32, slotID uint16) error {
+	if slotID == PostingMarkerSlot {
+		return fmt.Errorf("insert RID (%d,%d): slot ID is reserved for duplicate postings", pageID, slotID)
+	}
 
 	searchPath, leaf, err := ind.FindLeaf(key)
 
@@ -787,7 +809,15 @@ func (ind *Index) Find(key uint64) (*RID, error) {
 		midKey := leaf.GetKey(mid)
 
 		if midKey == key {
-			return leaf.GetRID(mid), nil
+			rid := leaf.GetRID(mid)
+			if rid.slotID == PostingMarkerSlot {
+				rids, err := ind.readPostingRIDs(rid.pageID)
+				if err != nil {
+					return nil, err
+				}
+				return &rids[0], nil
+			}
+			return rid, nil
 		}
 
 		if midKey < key {
@@ -801,9 +831,234 @@ func (ind *Index) Find(key uint64) (*RID, error) {
 
 }
 
+// InsertDuplicate inserts a RID for a key that may already exist. A key is
+// stored once in the B+ tree; additional RIDs are kept in posting pages.
+func (ind *Index) InsertDuplicate(key uint64, pageID uint32, slotID uint16) error {
+	if slotID == PostingMarkerSlot {
+		return fmt.Errorf("insert duplicate RID (%d,%d): slot ID is reserved for duplicate postings", pageID, slotID)
+	}
+	_, leaf, err := ind.FindLeaf(key)
+	if err != nil {
+		return err
+	}
+	rid := RID{pageID: pageID, slotID: slotID}
+	for i := 0; i < leaf.GetNumKeys(); i++ {
+		if leaf.GetKey(i) != key {
+			continue
+		}
+		stored := leaf.GetRID(i)
+		if stored.slotID != PostingMarkerSlot {
+			if sameRID(*stored, rid) {
+				return fmt.Errorf("key %d RID (%d,%d): %w", key, pageID, slotID, ErrDuplicateRID)
+			}
+			posting, err := ind.NewPostingPage()
+			if err != nil {
+				return err
+			}
+			posting.SetPostingCount(2)
+			posting.SetPostingRID(0, *stored)
+			posting.SetPostingRID(1, rid)
+			if err := ind.WritePage(posting); err != nil {
+				return fmt.Errorf("write posting page %d: %w", posting.ID, err)
+			}
+			leaf.SetRID(i, RID{pageID: posting.ID, slotID: PostingMarkerSlot})
+			return ind.WritePage(leaf)
+		}
+
+		postingPages, rids, err := ind.readPostingChain(stored.pageID)
+		if err != nil {
+			return err
+		}
+		for _, existing := range rids {
+			if sameRID(existing, rid) {
+				return fmt.Errorf("key %d RID (%d,%d): %w", key, pageID, slotID, ErrDuplicateRID)
+			}
+		}
+		tail := postingPages[len(postingPages)-1]
+		if tail.PostingCount() < MaxRIDsPerPosting {
+			tail.SetPostingRID(tail.PostingCount(), rid)
+			tail.SetPostingCount(uint16(tail.PostingCount() + 1))
+			return ind.WritePage(tail)
+		}
+		newPage, err := ind.NewPostingPage()
+		if err != nil {
+			return err
+		}
+		newPage.SetPostingCount(1)
+		newPage.SetPostingRID(0, rid)
+		if err := ind.WritePage(newPage); err != nil {
+			return fmt.Errorf("write posting page %d: %w", newPage.ID, err)
+		}
+		tail.SetNextPostingPage(newPage.ID)
+		return ind.WritePage(tail)
+	}
+
+	return ind.Insert(key, pageID, slotID)
+}
+
+// FindAll returns all RIDs for key in insertion order. It returns the single
+// stored RID for keys inserted through the unique Insert API.
+func (ind *Index) FindAll(key uint64) ([]RID, error) {
+	_, leaf, err := ind.FindLeaf(key)
+	if err != nil {
+		return nil, err
+	}
+	for i := 0; i < leaf.GetNumKeys(); i++ {
+		if leaf.GetKey(i) != key {
+			continue
+		}
+		stored := leaf.GetRID(i)
+		if stored.slotID == PostingMarkerSlot {
+			return ind.readPostingRIDs(stored.pageID)
+		}
+		return []RID{*stored}, nil
+	}
+	return nil, fmt.Errorf("key %d: %w", key, ErrKeyNotFound)
+}
+
+// DeleteRID removes one exact key/RID association. It frees posting pages when
+// a duplicate key shrinks back to one RID, and removes the key when none remain.
+func (ind *Index) DeleteRID(key uint64, pageID uint32, slotID uint16) error {
+	if slotID == PostingMarkerSlot {
+		return fmt.Errorf("delete RID (%d,%d): slot ID is reserved for duplicate postings", pageID, slotID)
+	}
+	_, leaf, err := ind.FindLeaf(key)
+	if err != nil {
+		return err
+	}
+	for i := 0; i < leaf.GetNumKeys(); i++ {
+		if leaf.GetKey(i) != key {
+			continue
+		}
+		stored := leaf.GetRID(i)
+		if stored.slotID != PostingMarkerSlot {
+			if !sameRID(*stored, RID{pageID: pageID, slotID: slotID}) {
+				return fmt.Errorf("key %d RID (%d,%d): %w", key, pageID, slotID, ErrKeyNotFound)
+			}
+			return ind.Delete(key)
+		}
+
+		postingPages, rids, err := ind.readPostingChain(stored.pageID)
+		if err != nil {
+			return err
+		}
+		remove := -1
+		for n, rid := range rids {
+			if sameRID(rid, RID{pageID: pageID, slotID: slotID}) {
+				remove = n
+				break
+			}
+		}
+		if remove < 0 {
+			return fmt.Errorf("key %d RID (%d,%d): %w", key, pageID, slotID, ErrKeyNotFound)
+		}
+		rids = append(rids[:remove], rids[remove+1:]...)
+		if len(rids) == 0 {
+			return ind.Delete(key)
+		} else if len(rids) == 1 {
+			leaf.SetRID(i, rids[0])
+			if err := ind.WritePage(leaf); err != nil {
+				return err
+			}
+		} else {
+			requiredPages := (len(rids) + MaxRIDsPerPosting - 1) / MaxRIDsPerPosting
+			for pageIndex := 0; pageIndex < requiredPages; pageIndex++ {
+				posting := postingPages[pageIndex]
+				start := pageIndex * MaxRIDsPerPosting
+				end := start + MaxRIDsPerPosting
+				if end > len(rids) {
+					end = len(rids)
+				}
+				clear(posting.Data[PostingHeaderSize:])
+				posting.SetPostingCount(uint16(end - start))
+				if pageIndex+1 < requiredPages {
+					posting.SetNextPostingPage(postingPages[pageIndex+1].ID)
+				} else {
+					posting.SetNextPostingPage(0)
+				}
+				for j, rid := range rids[start:end] {
+					posting.SetPostingRID(j, rid)
+				}
+				if err := ind.WritePage(posting); err != nil {
+					return err
+				}
+			}
+			for _, posting := range postingPages[requiredPages:] {
+				if err := ind.freePage(posting.ID); err != nil {
+					return err
+				}
+			}
+		}
+		if len(rids) == 1 {
+			for _, posting := range postingPages {
+				if err := ind.freePage(posting.ID); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	return fmt.Errorf("key %d: %w", key, ErrKeyNotFound)
+}
+
+func sameRID(a, b RID) bool { return a.pageID == b.pageID && a.slotID == b.slotID }
+
+func (ind *Index) readPostingRIDs(head uint32) ([]RID, error) {
+	_, rids, err := ind.readPostingChain(head)
+	return rids, err
+}
+
+func (ind *Index) readPostingChain(head uint32) ([]*BTreePage, []RID, error) {
+	pages := make([]*BTreePage, 0, 1)
+	rids := make([]RID, 0)
+	seenRIDs := make(map[RID]struct{})
+	seen := make(map[uint32]struct{})
+	for pageID := head; pageID != 0; {
+		if _, exists := seen[pageID]; exists {
+			return nil, nil, fmt.Errorf("posting chain contains cycle at page %d", pageID)
+		}
+		seen[pageID] = struct{}{}
+		page, err := ind.GetPage(pageID)
+		if err != nil {
+			return nil, nil, fmt.Errorf("read posting page %d: %w", pageID, err)
+		}
+		if page.NodeType() != PostingNode {
+			return nil, nil, fmt.Errorf("posting page %d has node type %d", pageID, page.NodeType())
+		}
+		count := page.PostingCount()
+		if count == 0 || count > MaxRIDsPerPosting {
+			return nil, nil, fmt.Errorf("posting page %d has invalid RID count %d", pageID, count)
+		}
+		pages = append(pages, page)
+		for i := 0; i < count; i++ {
+			rid := page.GetPostingRID(i)
+			if rid.slotID == PostingMarkerSlot {
+				return nil, nil, fmt.Errorf("posting page %d contains reserved marker RID", pageID)
+			}
+			if _, exists := seenRIDs[rid]; exists {
+				return nil, nil, fmt.Errorf("posting chain contains duplicate RID (%d,%d)", rid.pageID, rid.slotID)
+			}
+			seenRIDs[rid] = struct{}{}
+			rids = append(rids, rid)
+		}
+		next := page.NextPostingPage()
+		if next != 0 && next >= ind.numPages {
+			return nil, nil, fmt.Errorf("posting page %d has out-of-bounds next page %d", pageID, next)
+		}
+		pageID = next
+	}
+	if len(rids) < 2 {
+		return nil, nil, fmt.Errorf("posting chain at page %d has fewer than two RIDs", head)
+	}
+	return pages, rids, nil
+}
+
 // UpdateRID changes the stored location for an existing key without adding a
 // second key to the tree.
 func (ind *Index) UpdateRID(key uint64, pageID uint32, slotID uint16) error {
+	if slotID == PostingMarkerSlot {
+		return fmt.Errorf("RID slot ID %d is reserved for duplicate postings", slotID)
+	}
 	_, leaf, err := ind.FindLeaf(key)
 	if err != nil {
 		return fmt.Errorf("find key %d for RID update: %w", key, err)
@@ -811,6 +1066,9 @@ func (ind *Index) UpdateRID(key uint64, pageID uint32, slotID uint16) error {
 	for i := 0; i < leaf.GetNumKeys(); i++ {
 		if leaf.GetKey(i) != key {
 			continue
+		}
+		if leaf.GetRID(i).slotID == PostingMarkerSlot {
+			return fmt.Errorf("key %d has multiple RIDs; update the intended RID with DeleteRID and InsertDuplicate", key)
 		}
 		leaf.SetRID(i, RID{pageID: pageID, slotID: slotID})
 		if err := ind.WritePage(leaf); err != nil {
@@ -834,12 +1092,30 @@ func (ind *Index) Delete(key uint64) error {
 		if leaf.GetKey(i) != key {
 			continue
 		}
+		var postingPages []*BTreePage
+		if rid := leaf.GetRID(i); rid.slotID == PostingMarkerSlot {
+			postingPages, _, err = ind.readPostingChain(rid.pageID)
+			if err != nil {
+				return fmt.Errorf("read posting chain for key %d: %w", key, err)
+			}
+		}
 
 		removeLeafEntry(leaf, i)
+		var writeErr error
 		if leaf.ID == ind.rootPageID || leaf.GetNumKeys() >= MinKeysPerLeaf {
-			return ind.WritePage(leaf)
+			writeErr = ind.WritePage(leaf)
+		} else {
+			writeErr = ind.rebalanceLeaf(leaf)
 		}
-		return ind.rebalanceLeaf(leaf)
+		if writeErr != nil {
+			return writeErr
+		}
+		for _, posting := range postingPages {
+			if err := ind.freePage(posting.ID); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
 
 	return fmt.Errorf("key %d: %w", key, ErrKeyNotFound)
@@ -1520,6 +1796,22 @@ func (ind *Index) validateNode(node *BTreePage, minKey, maxKey uint64, level int
 				prevKey := node.GetKey(i - 1)
 				if key <= prevKey {
 					return fmt.Errorf("keys in leaf node %d are not sorted: %d <= %d", node.ID, key, prevKey)
+				}
+			}
+			rid := node.GetRID(i)
+			if rid.slotID == PostingMarkerSlot {
+				postingPages, _, err := ind.readPostingChain(rid.pageID)
+				if err != nil {
+					return fmt.Errorf("key %d has invalid posting chain: %w", key, err)
+				}
+				for _, posting := range postingPages {
+					if posting.ID >= ind.numPages {
+						return fmt.Errorf("posting page %d is out of bounds", posting.ID)
+					}
+					if visitedPages[posting.ID] != -1 {
+						return fmt.Errorf("posting page %d is already reachable or appears more than once", posting.ID)
+					}
+					visitedPages[posting.ID] = -3
 				}
 			}
 		}

@@ -19,6 +19,12 @@ import (
 // Bytes 7-10:  leftmostChildPageID
 // Bytes 11+:   [key: 8 bytes][rightChildPageID: 4 bytes] × numKeys
 
+// posting node layout
+// Byte 0:      nodeType (3 = posting)
+// Bytes 1-2:   numRIDs
+// Bytes 3-6:   nextPostingPageID
+// Bytes 7+:    [pageID: 4 bytes][slotID: 2 bytes] × numRIDs
+
 // if a key is equal to the key in an internal node, we go to the right child page
 
 type NodeType uint8
@@ -27,6 +33,7 @@ const (
 	LeafNode     NodeType = 1
 	InternalNode NodeType = 0
 	FreeNode     NodeType = 2
+	PostingNode  NodeType = 3
 )
 
 type BTreePage struct {
@@ -61,6 +68,13 @@ const (
 	InternalKeyOffset    = 8
 	InternalPageIdOffset = 12
 	InternalKeySize      = 8
+)
+
+const (
+	PostingHeaderSize = 7
+	PostingRIDSize    = 6
+	MaxRIDsPerPosting = (PAGE_SIZE - PostingHeaderSize) / PostingRIDSize
+	PostingMarkerSlot = ^uint16(0)
 )
 
 type Status string
@@ -247,6 +261,36 @@ func (b *BTreePage) NextLeaf() uint32 {
 
 func (b *BTreePage) SetNextLeaf(n uint32) {
 	binary.LittleEndian.PutUint32(b.Data[7:11], n)
+}
+
+func (b *BTreePage) PostingCount() int {
+	return int(binary.LittleEndian.Uint16(b.Data[1:3]))
+}
+
+func (b *BTreePage) SetPostingCount(n uint16) {
+	binary.LittleEndian.PutUint16(b.Data[1:3], n)
+}
+
+func (b *BTreePage) NextPostingPage() uint32 {
+	return binary.LittleEndian.Uint32(b.Data[3:7])
+}
+
+func (b *BTreePage) SetNextPostingPage(id uint32) {
+	binary.LittleEndian.PutUint32(b.Data[3:7], id)
+}
+
+func (b *BTreePage) GetPostingRID(i int) RID {
+	offset := PostingHeaderSize + i*PostingRIDSize
+	return RID{
+		pageID: binary.LittleEndian.Uint32(b.Data[offset : offset+4]),
+		slotID: binary.LittleEndian.Uint16(b.Data[offset+4 : offset+6]),
+	}
+}
+
+func (b *BTreePage) SetPostingRID(i int, rid RID) {
+	offset := PostingHeaderSize + i*PostingRIDSize
+	binary.LittleEndian.PutUint32(b.Data[offset:offset+4], rid.pageID)
+	binary.LittleEndian.PutUint16(b.Data[offset+4:offset+6], rid.slotID)
 }
 
 func (b *BTreePage) GetChild(i uint32) uint32 {
