@@ -13,6 +13,7 @@ import (
 )
 
 var ErrIndexExists = errors.New("index already exists")
+var ErrIndexNotFound = errors.New("index not found")
 
 // CreateIndex builds a non-unique index for a UINT64 column. It scans a stable
 // table image under the same process and filesystem locks used by mutations,
@@ -165,6 +166,83 @@ func (t *Table) CreateIndex(column string) error {
 	return nil
 }
 
+// DropIndex removes a secondary UINT64 index by clearing its catalog bit
+// before unlinking the index file. A crash after the bit is cleared leaves
+// only an ignored orphan, never a catalog entry pointing to a missing file.
+func (t *Table) DropIndex(column string) error {
+	if t == nil || t.Pager == nil {
+		return fmt.Errorf("drop index: table is not open")
+	}
+	t.mutationMu.Lock()
+	defer t.mutationMu.Unlock()
+	if t.poisoned {
+		return fmt.Errorf("drop index on table %q: table must be reopened after a failed rollback", t.Name)
+	}
+	canonical, err := canonicalIdentifier(column, "column")
+	if err != nil {
+		return err
+	}
+	columnIndex := -1
+	for i, name := range t.cols {
+		if name == canonical {
+			columnIndex = i
+			break
+		}
+	}
+	if columnIndex < 0 {
+		return fmt.Errorf("drop index on table %q: column %q does not exist", t.Name, canonical)
+	}
+	if columnIndex == 0 {
+		return fmt.Errorf("drop index on table %q: generated primary index cannot be dropped", t.Name)
+	}
+	if t.colTypes[columnIndex] != ColumnUint64 {
+		return fmt.Errorf("drop index on table %q: column %q is not UINT64", t.Name, canonical)
+	}
+	lock, err := filelock.Acquire(t.Path + ".lock")
+	if err != nil {
+		return fmt.Errorf("lock table %q for index removal: %w", t.Name, err)
+	}
+	defer lock.Close()
+	if err := wal.Recover(t.Path + ".wal"); err != nil {
+		return fmt.Errorf("recover table %q before index removal: %w", t.Name, err)
+	}
+	if err := t.Pager.Refresh(); err != nil {
+		return fmt.Errorf("refresh table %q before index removal: %w", t.Name, err)
+	}
+	if err := t.refreshIndexes(); err != nil {
+		return fmt.Errorf("refresh indexes for table %q: %w", t.Name, err)
+	}
+	index := t.Indexes[canonical]
+	if index == nil {
+		return fmt.Errorf("drop index on table %q column %q: %w", t.Name, canonical, ErrIndexNotFound)
+	}
+	if t.indexedCols == nil {
+		catalog := make([]bool, len(t.cols))
+		for i := 1; i < len(t.cols); i++ {
+			catalog[i] = t.Indexes[t.cols[i]] != nil
+		}
+		if err := t.writeIndexCatalog(catalog); err != nil {
+			return fmt.Errorf("migrate legacy index files into catalog: %w", err)
+		}
+	}
+	if err := t.setColumnIndexed(columnIndex, false); err != nil {
+		return fmt.Errorf("unlist index %q: %w", canonical, err)
+	}
+	closeErr := index.Close()
+	delete(t.Indexes, canonical)
+	path := btree.IndexPath(t.Name, canonical)
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return errors.Join(closeErr, fmt.Errorf("remove index file %q: %w", path, err))
+	}
+	if err := syncDirectory(filepath.Dir(path)); err != nil {
+		return errors.Join(closeErr, fmt.Errorf("sync index removal for %q: %w", canonical, err))
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close dropped index %q: %w", canonical, closeErr)
+	}
+	return nil
+}
+
 func (t *Table) setColumnIndexed(columnIndex int, indexed bool) error {
 	flags := make([]bool, len(t.cols))
 	copy(flags, t.indexedCols)
@@ -220,6 +298,12 @@ func (t *Table) refreshIndexes() error {
 			continue
 		}
 		if columnIndex > 0 && indexedCols != nil && !indexedCols[columnIndex] {
+			if index := t.Indexes[column]; index != nil {
+				if err := index.Close(); err != nil {
+					return fmt.Errorf("close unlisted index %q: %w", column, err)
+				}
+				delete(t.Indexes, column)
+			}
 			continue
 		}
 		if index := t.Indexes[column]; index != nil {
@@ -245,6 +329,17 @@ func (t *Table) refreshIndexes() error {
 		t.Indexes[column] = index
 	}
 	return nil
+}
+
+func (t *Table) refreshIndexesForRead() error {
+	if err := t.refreshIndexes(); err == nil {
+		return nil
+	}
+	for column, index := range t.Indexes {
+		_ = index.Close()
+		delete(t.Indexes, column)
+	}
+	return t.refreshIndexes()
 }
 
 func (t *Table) maintainSecondaryIndexes(oldRow, newRow []string, oldPage uint32, oldSlot uint16, newPage uint32, newSlot uint16) error {

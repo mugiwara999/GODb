@@ -76,6 +76,7 @@ func TestCommandLoopCreatesTypedColumnsAndValidatesValues(t *testing.T) {
 		"SELECT age FROM people WHERE age=42",
 		"INSERT INTO people VALUES invalid, 'Grace'",
 		"UPDATE people SET age=43 WHERE name='Ada'",
+		"DROP INDEX ON people(age)",
 		"SELECT age FROM people WHERE age=00043",
 	}, "\n")
 	var output bytes.Buffer
@@ -98,6 +99,9 @@ func TestCommandLoopCreatesTypedColumnsAndValidatesValues(t *testing.T) {
 	defer tbl.Close()
 	if got, want := tbl.GetColumnTypes(), []table.ColumnType{table.ColumnUint64, table.ColumnUint64, table.ColumnText}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("GetColumnTypes() = %v, want %v", got, want)
+	}
+	if tbl.Indexes["age"] != nil {
+		t.Fatal("dropped age index was reopened")
 	}
 	rows, err := tbl.Select([]string{"age", "name"}, nil)
 	if err != nil {

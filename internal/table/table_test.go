@@ -414,6 +414,78 @@ func TestSecondaryIndexTracksRelocatedRows(t *testing.T) {
 	}
 }
 
+func TestDropSecondaryIndexRefreshesOlderHandlesAndFallsBackToScan(t *testing.T) {
+	setupTableTest(t)
+	tbl, err := table.CreateWithTypes("drop_index", []table.Column{
+		{Name: "age", Type: table.ColumnUint64},
+		{Name: "name", Type: table.ColumnText},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tbl.Insert([]string{"42", "Ada"}); err != nil {
+		t.Fatal(err)
+	}
+	oldHandle, err := table.Open("drop_index")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer oldHandle.Close()
+	if err := tbl.CreateIndex("age"); err != nil {
+		t.Fatal(err)
+	}
+	if err := oldHandle.Insert([]string{"42", "Grace"}); err != nil {
+		t.Fatalf("old-handle insert after create: %v", err)
+	}
+	if err := tbl.DropIndex("age"); err != nil {
+		t.Fatalf("DropIndex: %v", err)
+	}
+	if tbl.Indexes["age"] != nil {
+		t.Fatal("DropIndex left the index open on the dropping handle")
+	}
+	rows, err := tbl.Select([]string{"name"}, []table.ColEq{{ColIdx: 1, Value: "42"}})
+	if err != nil || len(rows) != 3 {
+		t.Fatalf("Select after drop = %q, %v; want two rows", rows, err)
+	}
+	if oldHandle.Indexes["age"] == nil {
+		t.Fatal("old handle did not retain its pre-refresh index fixture")
+	}
+	rows, err = oldHandle.Select([]string{"name"}, []table.ColEq{{ColIdx: 1, Value: "42"}})
+	if err != nil || len(rows) != 3 {
+		t.Fatalf("old-handle Select after drop = %q, %v; want two rows", rows, err)
+	}
+	if oldHandle.Indexes["age"] != nil {
+		t.Fatal("old handle did not discard the dropped index before reading")
+	}
+	if err := oldHandle.Insert([]string{"50", "Lin"}); err != nil {
+		t.Fatalf("old-handle insert after drop: %v", err)
+	}
+	if err := tbl.ValidateIndexes(); err != nil {
+		t.Fatalf("ValidateIndexes after drop: %v", err)
+	}
+	if err := tbl.DropIndex("age"); !errors.Is(err, table.ErrIndexNotFound) {
+		t.Fatalf("second DropIndex error = %v, want ErrIndexNotFound", err)
+	}
+	if err := tbl.DropIndex("id"); err == nil {
+		t.Fatal("DropIndex accepted generated ID")
+	}
+	if err := tbl.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := table.Open("drop_index")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if reopened.Indexes["age"] != nil {
+		t.Fatal("Open restored a dropped index")
+	}
+	rows, err = reopened.Select([]string{"name"}, []table.ColEq{{ColIdx: 1, Value: "50"}})
+	if err != nil || len(rows) != 2 || rows[1][0] != "Lin" {
+		t.Fatalf("scan after reopen = %q, %v; want Lin", rows, err)
+	}
+}
+
 func TestRejectedInsertDoesNotConsumeIDOrAllocatePage(t *testing.T) {
 	setupTableTest(t)
 

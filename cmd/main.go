@@ -64,7 +64,7 @@ func run(input io.Reader, output io.Writer) {
 				fmt.Fprintln(output, err)
 			}
 
-		case "create_index", "insert", "select", "delete", "update":
+		case "create_index", "drop_index", "insert", "select", "delete", "update":
 			tbl, err := table.Open(query.Table)
 			if err != nil {
 				fmt.Fprintln(output, err)
@@ -74,6 +74,10 @@ func run(input io.Reader, output io.Writer) {
 			switch query.Type {
 			case "create_index":
 				if err := tbl.CreateIndex(query.Columns[0]); err != nil {
+					fmt.Fprintln(output, err)
+				}
+			case "drop_index":
+				if err := tbl.DropIndex(query.Columns[0]); err != nil {
 					fmt.Fprintln(output, err)
 				}
 			case "insert":

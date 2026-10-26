@@ -8,7 +8,9 @@ import (
 	"strings"
 
 	"github.com/mugiwara999/goDB/internal/btree"
+	"github.com/mugiwara999/goDB/internal/filelock"
 	"github.com/mugiwara999/goDB/internal/pager"
+	"github.com/mugiwara999/goDB/internal/wal"
 )
 
 type ColEq struct {
@@ -229,6 +231,32 @@ func (t *Table) insert(values []string) error {
 }
 
 func (t *Table) Select(columns []string, colEquals []ColEq) ([][]string, error) {
+	if t == nil || t.Pager == nil {
+		return nil, fmt.Errorf("select: table is not open")
+	}
+	t.mutationMu.Lock()
+	defer t.mutationMu.Unlock()
+	if t.poisoned {
+		return nil, fmt.Errorf("select from table %q: table must be reopened after a failed rollback", t.Name)
+	}
+	lock, err := filelock.Acquire(t.Path + ".lock")
+	if err != nil {
+		return nil, fmt.Errorf("lock table %q for select: %w", t.Name, err)
+	}
+	defer lock.Close()
+	if err := wal.Recover(t.Path + ".wal"); err != nil {
+		return nil, fmt.Errorf("recover table %q before select: %w", t.Name, err)
+	}
+	if err := t.Pager.Refresh(); err != nil {
+		return nil, fmt.Errorf("refresh table %q before select: %w", t.Name, err)
+	}
+	if err := t.refreshIndexesForRead(); err != nil {
+		return nil, fmt.Errorf("refresh table %q indexes before select: %w", t.Name, err)
+	}
+	return t.selectRows(columns, colEquals)
+}
+
+func (t *Table) selectRows(columns []string, colEquals []ColEq) ([][]string, error) {
 	result := make([][]string, 0)
 
 	if len(columns) > 0 && columns[0] == "*" {
