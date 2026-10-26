@@ -307,7 +307,7 @@
 - Regression coverage: race a SELECT and `ValidateIndexes` against `Close`; either the operation completes first or reports `ErrTableClosed`. Verify repeated close and post-close API behavior.
 - Verification: targeted test repeated 100 times and under race detection 25 times; full tests, build, vet, race tests for table/WAL/B+ tree/pager, Windows and Solaris cross-builds, and `git diff --check` passed.
 - Limitations: callers using the publicly exposed `Table.Pager` directly remain responsible for synchronizing that access with `Close`.
-- Commit: pending.
+- Commit: `d393111` (`Serialize table close with operations`).
 
 ### Shared-read-lock assessment
 
