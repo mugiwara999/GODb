@@ -497,6 +497,7 @@
 - Regression coverage: full leaf/internal counts, corrupt uint16 count, posting/invalid types, nil receiver, failed-call no mutation, and valid increments to each page capacity.
 - Verification: focused tests passed; full tests/build/vet and Windows/Solaris package cross-target checks passed. B-tree/table race tests are still running for this checkpoint.
 - Limitations: `SetNumKeys` remains a deliberately raw serialized-field writer for split/rebalance logic and corruption tests; its call sites need a separate invariant audit.
+- Commit: `fc85cdc` (`Guard B-tree key count increments`).
 
 ## Prioritized backlog
 
