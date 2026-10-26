@@ -542,7 +542,7 @@
 - Regression coverage: nil receivers, posting/free/invalid node types, no mutation after failed writes, and valid leaf/internal parent round trips.
 - Verification: focused and full tests, build, vet, B-tree/table race tests, Windows/Solaris test-binary cross-target checks, and `git diff --check` passed.
 - Limitations: native Solaris runtime coverage remains unavailable. `GetNumKeys` is the remaining unchecked fixed-offset page accessor; its 82 call sites need a deliberate checked-API migration.
-- Commit: pending.
+- Commit: `35a6a0c` (`Validate B-tree parent pointers`).
 
 ## Prioritized backlog
 
@@ -553,4 +553,4 @@
 
 ## Next action
 
-Next task: finish verification and commit the checked parent pointer accessors, then migrate `GetNumKeys` callers to a checked API. Validated count setters are committed at `c4c5612`; leaf/posting link accessors are committed at `dca4a37`. Hosted run `40269369747` passed on Ubuntu and Windows for `b526b7f`. Preserve the supplied untracked `AGENTS.md`. Separately continue seeking a usable Solaris/illumos runtime; Windows native storage tests pass in hosted CI.
+Next task: migrate `GetNumKeys` callers to a checked API. Validated count setters are committed at `c4c5612`; leaf/posting link accessors at `dca4a37`; parent pointer accessors at `35a6a0c`. Hosted run `40269369747` passed on Ubuntu and Windows for `b526b7f`; CI for `35a6a0c` is pending. Preserve the supplied untracked `AGENTS.md`. Separately continue seeking a usable Solaris/illumos runtime; Windows native storage tests pass in hosted CI.
