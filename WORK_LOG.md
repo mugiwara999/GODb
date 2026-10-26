@@ -507,6 +507,7 @@
 - Regression coverage: nil/wrong page types, empty/corrupt counts, negative, skipped, past-count and out-of-capacity indexes, no mutation on failure, append-at-count and final physical slot round trips.
 - Verification: focused B-tree/table tests and full tests/build/vet passed; B-tree/table race tests passed; Windows and Solaris package test binaries cross-compiled with `go test -exec=true`.
 - Limitations: `SetNumKeys` remains raw, and entry insertion helpers still accept unchecked indexes/counts; audit those call sites next.
+- Commit: `48db65f` (`Bounds-check posting page RID access`).
 
 ## Prioritized backlog
 
