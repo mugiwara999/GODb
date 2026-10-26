@@ -340,7 +340,7 @@
 - Regression coverage: scans across multiple leaf pages, boundary inclusivity, empty point ranges, duplicate postings, unbounded scans, indexed-versus-scan equivalence, empty matches, additional filters, update/delete, and reopen.
 - Verification: targeted range tests repeated 10 times; full tests, build, vet, race tests for table/pager/B+ tree/WAL/CLI, Windows and Solaris cross-builds, and `git diff --check` passed.
 - Limitations: SQL range predicates are not yet implemented; range selection is available through the Go API. The iterator requires callers to exclude concurrent index mutation; `Table.SelectRange` provides that coordination.
-- Commit: pending.
+- Commit: `c65594b` (`Add UINT64 range selection`).
 
 ## Prioritized backlog
 
