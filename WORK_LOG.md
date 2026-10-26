@@ -414,7 +414,7 @@
 - Verification: full tests, build, vet, race tests for table/pager/B+ tree/WAL/parser/lexer/CLI, Windows and Solaris cross-builds, duplicate-chain and table range-select benchmarks, and `git diff --check` passed.
 - Benchmark on Linux/amd64, 13th Gen Intel Core i5-13500H: for 10,000 duplicate RIDs, batch iteration 1.44–1.86 ms/op and 872 KB/op; streamed slice validation 0.186–0.205 ms/op and 436 KB/op. Table SELECT over 1,024 duplicate rows measured 0.462–0.472 ms/op and 289 KB/op, compared with the prior 0.598–0.600 ms/op and 319 KB/op.
 - Limitations: the validation slice still grows linearly with one posting chain; this halves allocation relative to the previous streaming map and avoids the batch RID slice, but does not give a strict constant-memory bound. Exact validation for arbitrary unsorted RIDs would need external storage or a persistent uniqueness structure.
-- Commit: pending.
+- Commit: `64098c2` (`Compact range RID duplicate checks`).
 
 ## Prioritized backlog
 
