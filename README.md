@@ -283,6 +283,10 @@ DELETE FROM users WHERE id=0
 
 Mutations to an existing table use an undo journal and are recovered when the table is opened. Initial table and index creation are not crash-atomic.
 
+## Benchmarks
+
+Run the storage microbenchmarks with `go test ./internal/btree ./internal/table -run '^$' -bench . -benchmem`. They report B+ tree insert/find and table insert/indexed-select costs, including the table mutation journal's sync overhead. Results depend on the filesystem and hardware; compare runs on the same machine and use a longer default benchmark time for measurements.
+
 ---
 
 # Current Limitations

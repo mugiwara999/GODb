@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -230,13 +231,10 @@ func (t *Table) GetColumns() []string {
 }
 
 func tablePath(name string) (string, error) {
-	if err := godotenv.Load(); err != nil {
-		return "../data/" + strings.ToLower(name) + ".bin", nil
-	}
-
+	_ = godotenv.Load()
 	dataDir := os.Getenv("DATA_DIR")
 	if dataDir == "" {
 		dataDir = "../data"
 	}
-	return dataDir + "/" + strings.ToLower(name) + ".bin", nil
+	return filepath.Join(dataDir, strings.ToLower(name)+".bin"), nil
 }
