@@ -203,29 +203,33 @@ func BenchmarkTableSelectMultipleIndexes(b *testing.B) {
 }
 
 func BenchmarkTableRangeUpdate(b *testing.B) {
-	for _, indexed := range []bool{false, true} {
-		variant := "scan"
-		if indexed {
-			variant = "secondary_index"
-		}
-		b.Run(variant, func(b *testing.B) {
-			tbl := benchmarkRangeUpdateTable(b, indexed)
-			selectedRange := table.Uint64Range{Lower: uint64Pointer(1024), LowerInclusive: true, Upper: uint64Pointer(1027), UpperInclusive: true}
-			updates := []table.UpdateValue{{ColIdx: 2, Value: "changed"}}
-			// The key is deliberately left unchanged, so repeated iterations use
-			// the same four matching rows and isolate range-selection work.
-			b.ReportAllocs()
-			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
-				if err := tbl.UpdateRange(selectedRange, nil, updates); err != nil {
-					b.Fatalf("UpdateRange: %v", err)
-				}
+	for _, size := range []string{"narrow", "broad"} {
+		for _, indexed := range []bool{false, true} {
+			variant := "scan"
+			if indexed {
+				variant = "secondary_index"
 			}
-		})
+			b.Run(size+"/"+variant, func(b *testing.B) {
+				tbl := benchmarkRangeUpdateTable(b, indexed)
+				lower, upper := uint64(0), uint64(2047)
+				if size == "narrow" {
+					lower, upper = 1024, 1027
+				}
+				selectedRange := table.Uint64Range{ColIdx: 1, Lower: &lower, LowerInclusive: true, Upper: &upper, UpperInclusive: true}
+				updates := []table.UpdateValue{{ColIdx: 2, Value: "changed"}}
+				// The key is deliberately unchanged so every iteration selects the
+				// same rows and isolates range-selection work.
+				b.ReportAllocs()
+				b.ResetTimer()
+				for i := 0; i < b.N; i++ {
+					if err := tbl.UpdateRange(selectedRange, nil, updates); err != nil {
+						b.Fatalf("UpdateRange: %v", err)
+					}
+				}
+			})
+		}
 	}
 }
-
-func uint64Pointer(value uint64) *uint64 { return &value }
 
 func benchmarkRangeUpdateTable(b *testing.B, indexed bool) *table.Table {
 	b.Helper()

@@ -59,6 +59,80 @@ func (t *Table) rowMatchesUint64Range(row []string, selectedRange *Uint64Range) 
 	return valueInUint64Range(value, *selectedRange), nil
 }
 
+type rangeMutationCandidate struct {
+	info pager.RowItInfo
+	row  []string
+}
+
+// rangeMutationCandidates reads all matching rows from a ranged-column index
+// before the caller changes any table or index pages. The returned bool is
+// false when the ranged column has no index, so callers can retain the scan
+// path. Each candidate is checked against its stored row before it is trusted.
+func (t *Table) rangeMutationCandidates(selectedRange Uint64Range, filters []ColEq, operation string) ([]rangeMutationCandidate, bool, error) {
+	index := t.Indexes[t.cols[selectedRange.ColIdx]]
+	if index == nil {
+		return nil, false, nil
+	}
+	iterator, err := index.RangeIterator(selectedRange.Lower, selectedRange.LowerInclusive, selectedRange.Upper, selectedRange.UpperInclusive)
+	if err != nil {
+		return nil, true, fmt.Errorf("%s table %q range index %q: %w", operation, t.Name, t.cols[selectedRange.ColIdx], err)
+	}
+	pages := make(map[uint32]*pager.Page)
+	seen := make(map[uint64]struct{})
+	var candidates []rangeMutationCandidate
+	for {
+		entry, ok, err := iterator.Next()
+		if err != nil {
+			return nil, true, fmt.Errorf("%s table %q range index %q: %w", operation, t.Name, t.cols[selectedRange.ColIdx], err)
+		}
+		if !ok {
+			break
+		}
+		for _, rid := range entry.RIDs {
+			pageID, slotID := rid.GetPageID(), rid.GetSlotID()
+			ridKey := uint64(pageID)<<16 | uint64(slotID)
+			if _, exists := seen[ridKey]; exists {
+				return nil, true, fmt.Errorf("%s table %q range index %q contains duplicate row location (%d,%d)", operation, t.Name, t.cols[selectedRange.ColIdx], pageID, slotID)
+			}
+			seen[ridKey] = struct{}{}
+			page := pages[pageID]
+			if page == nil {
+				page, err = t.Pager.GetPage(int(pageID))
+				if err != nil {
+					return nil, true, fmt.Errorf("%s table %q range index %q points to invalid page %d: %w", operation, t.Name, t.cols[selectedRange.ColIdx], pageID, err)
+				}
+				pages[pageID] = page
+			}
+			data, err := page.GetRow(int(slotID))
+			if err != nil {
+				return nil, true, fmt.Errorf("%s table %q range index %q points to invalid row (%d,%d): %w", operation, t.Name, t.cols[selectedRange.ColIdx], pageID, slotID, err)
+			}
+			row, err := t.decodeRow(data)
+			if err != nil {
+				return nil, true, fmt.Errorf("%s table %q range index %q points to corrupt row: %w", operation, t.Name, t.cols[selectedRange.ColIdx], err)
+			}
+			value, err := strconv.ParseUint(row[selectedRange.ColIdx], 10, 64)
+			if err != nil || value != entry.Key {
+				return nil, true, fmt.Errorf("%s table %q range index %q has stale key %d at row value %q", operation, t.Name, t.cols[selectedRange.ColIdx], entry.Key, row[selectedRange.ColIdx])
+			}
+			matches := true
+			for _, filter := range filters {
+				if row[filter.ColIdx] != filter.Value {
+					matches = false
+					break
+				}
+			}
+			if matches {
+				candidates = append(candidates, rangeMutationCandidate{
+					info: pager.RowItInfo{PageID: int(pageID), SlotID: int(slotID)},
+					row:  row,
+				})
+			}
+		}
+	}
+	return candidates, true, nil
+}
+
 type UpdateValue struct {
 	ColIdx int
 	Value  string
@@ -694,8 +768,54 @@ func (t *Table) delete(filters []ColEq, selectedRange *Uint64Range) error {
 	if index == nil {
 		return fmt.Errorf("delete from table %q: missing primary key index", t.Name)
 	}
+	deleteRow := func(row []string, info pager.RowItInfo) error {
+		id, err := strconv.ParseUint(row[0], 10, 64)
+		if err != nil {
+			return fmt.Errorf("delete from table %q: invalid row ID %q: %w", t.Name, row[0], err)
+		}
+		page, err := t.Pager.GetPage(info.PageID)
+		if err != nil {
+			return fmt.Errorf("delete from table %q page %d slot %d: %w", t.Name, info.PageID, info.SlotID, err)
+		}
+		if err := page.DeleteRow(info.SlotID); err != nil {
+			return fmt.Errorf("delete from table %q page %d slot %d: %w", t.Name, info.PageID, info.SlotID, err)
+		}
+		if err := t.Pager.Flush(page); err != nil {
+			return fmt.Errorf("delete from table %q page %d slot %d: %w", t.Name, info.PageID, info.SlotID, err)
+		}
+		if err := index.Delete(id); err != nil {
+			return fmt.Errorf("delete from table %q primary index key %d: %w", t.Name, id, err)
+		}
+		for columnIndex := 1; columnIndex < len(t.cols); columnIndex++ {
+			secondary := t.Indexes[t.cols[columnIndex]]
+			if secondary == nil {
+				continue
+			}
+			key, err := t.indexKey(t.colTypes[columnIndex], row[columnIndex])
+			if err != nil {
+				return fmt.Errorf("delete from table %q: invalid indexed value for column %q: %w", t.Name, t.cols[columnIndex], err)
+			}
+			if err := secondary.DeleteRID(key, uint32(info.PageID), uint16(info.SlotID)); err != nil {
+				return fmt.Errorf("delete from secondary index %q: %w", t.cols[columnIndex], err)
+			}
+		}
+		return nil
+	}
+	if selectedRange != nil {
+		candidates, indexed, err := t.rangeMutationCandidates(*selectedRange, filters, "delete")
+		if err != nil {
+			return err
+		}
+		if indexed {
+			for _, candidate := range candidates {
+				if err := deleteRow(candidate.row, candidate.info); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+	}
 	rowIt := t.Pager.RowIterator()
-
 	for {
 		rowData, err := rowIt.Next()
 		if err != nil {
@@ -704,66 +824,32 @@ func (t *Table) delete(filters []ColEq, selectedRange *Uint64Range) error {
 		if rowData == nil {
 			break
 		}
-
 		row, err := t.decodeRow(rowData)
 		if err != nil {
 			return fmt.Errorf("delete from table %q: corrupt row: %w", t.Name, err)
 		}
-
 		match, err := t.rowMatchesUint64Range(row, selectedRange)
 		if err != nil {
 			return fmt.Errorf("delete from table %q: %w", t.Name, err)
 		}
-		for _, v := range filters {
+		for _, filter := range filters {
 			if !match {
 				break
 			}
-			if v.ColIdx < 0 || v.ColIdx >= len(row) {
-				return fmt.Errorf("delete from table %q: filter column index %d is out of range for row with %d values", t.Name, v.ColIdx, len(row))
+			if filter.ColIdx < 0 || filter.ColIdx >= len(row) {
+				return fmt.Errorf("delete from table %q: filter column index %d is out of range for row with %d values", t.Name, filter.ColIdx, len(row))
 			}
-			if row[v.ColIdx] != v.Value {
+			if row[filter.ColIdx] != filter.Value {
 				match = false
 				break
 			}
 		}
-
 		if match {
-			id, err := strconv.ParseUint(row[0], 10, 64)
-			if err != nil {
-				return fmt.Errorf("delete from table %q: invalid row ID %q: %w", t.Name, row[0], err)
-			}
-			matchInfo := rowIt.GetCurrentInfo()
-			page, err := t.Pager.GetPage(matchInfo.PageID)
-			if err != nil {
-				return fmt.Errorf("delete from table %q page %d slot %d: %w", t.Name, matchInfo.PageID, matchInfo.SlotID, err)
-			}
-
-			if err := page.DeleteRow(matchInfo.SlotID); err != nil {
-				return fmt.Errorf("delete from table %q page %d slot %d: %w", t.Name, matchInfo.PageID, matchInfo.SlotID, err)
-			}
-
-			if err := t.Pager.Flush(page); err != nil {
-				return fmt.Errorf("delete from table %q page %d slot %d: %w", t.Name, matchInfo.PageID, matchInfo.SlotID, err)
-			}
-			if err := index.Delete(id); err != nil {
-				return fmt.Errorf("delete from table %q primary index key %d: %w", t.Name, id, err)
-			}
-			for columnIndex := 1; columnIndex < len(t.cols); columnIndex++ {
-				secondary := t.Indexes[t.cols[columnIndex]]
-				if secondary == nil {
-					continue
-				}
-				key, err := t.indexKey(t.colTypes[columnIndex], row[columnIndex])
-				if err != nil {
-					return fmt.Errorf("delete from table %q: invalid indexed value for column %q: %w", t.Name, t.cols[columnIndex], err)
-				}
-				if err := secondary.DeleteRID(key, uint32(matchInfo.PageID), uint16(matchInfo.SlotID)); err != nil {
-					return fmt.Errorf("delete from secondary index %q: %w", t.cols[columnIndex], err)
-				}
+			if err := deleteRow(row, rowIt.GetCurrentInfo()); err != nil {
+				return err
 			}
 		}
 	}
-
 	return nil
 }
 
@@ -806,44 +892,7 @@ func (t *Table) update(filters []ColEq, toUpdate []UpdateValue, selectedRange *U
 		oldRID *btree.RID
 	}
 	var changes []change
-	// Collect matches first so relocated rows cannot extend the active scan.
-	rowIt := t.Pager.RowIterator()
-
-	for {
-		rowData, err := rowIt.Next()
-		if err != nil {
-			return fmt.Errorf("update table %q: %w", t.Name, err)
-		}
-		if rowData == nil {
-			break
-		}
-
-		row, err := t.decodeRow(rowData)
-		if err != nil {
-			return fmt.Errorf("update table %q: corrupt row: %w", t.Name, err)
-		}
-
-		match, err := t.rowMatchesUint64Range(row, selectedRange)
-		if err != nil {
-			return fmt.Errorf("update table %q: %w", t.Name, err)
-		}
-		for _, v := range filters {
-			if !match {
-				break
-			}
-			if v.ColIdx < 0 || v.ColIdx >= len(row) {
-				return fmt.Errorf("update table %q: filter column index %d is out of range for row with %d values", t.Name, v.ColIdx, len(row))
-			}
-			if row[v.ColIdx] != v.Value {
-				match = false
-				break
-			}
-		}
-
-		if !match {
-			continue
-		}
-
+	addChange := func(row []string, info pager.RowItInfo) error {
 		updated := append([]string(nil), row...)
 		for _, v := range toUpdate {
 			updated[v.ColIdx] = v.Value
@@ -858,9 +907,61 @@ func (t *Table) update(filters []ColEq, toUpdate []UpdateValue, selectedRange *U
 			return fmt.Errorf("update table %q: corrupt row ID %q: %w", t.Name, row[0], err)
 		}
 		changes = append(changes, change{
-			info: rowIt.GetCurrentInfo(), data: data, id: id,
+			info: info, data: data, id: id,
 			oldRow: row, newRow: updated,
 		})
+		return nil
+	}
+	indexed := false
+	if selectedRange != nil {
+		candidates, hasIndex, err := t.rangeMutationCandidates(*selectedRange, filters, "update")
+		if err != nil {
+			return err
+		}
+		indexed = hasIndex
+		for _, candidate := range candidates {
+			if err := addChange(candidate.row, candidate.info); err != nil {
+				return err
+			}
+		}
+	}
+	if !indexed {
+		// Collect matches first so relocated rows cannot extend the active scan.
+		rowIt := t.Pager.RowIterator()
+		for {
+			rowData, err := rowIt.Next()
+			if err != nil {
+				return fmt.Errorf("update table %q: %w", t.Name, err)
+			}
+			if rowData == nil {
+				break
+			}
+			row, err := t.decodeRow(rowData)
+			if err != nil {
+				return fmt.Errorf("update table %q: corrupt row: %w", t.Name, err)
+			}
+			match, err := t.rowMatchesUint64Range(row, selectedRange)
+			if err != nil {
+				return fmt.Errorf("update table %q: %w", t.Name, err)
+			}
+			for _, filter := range filters {
+				if !match {
+					break
+				}
+				if filter.ColIdx < 0 || filter.ColIdx >= len(row) {
+					return fmt.Errorf("update table %q: filter column index %d is out of range for row with %d values", t.Name, filter.ColIdx, len(row))
+				}
+				if row[filter.ColIdx] != filter.Value {
+					match = false
+					break
+				}
+			}
+			if match {
+				if err := addChange(row, rowIt.GetCurrentInfo()); err != nil {
+					return err
+				}
+			}
+		}
 	}
 
 	// Simulate replacements first so a later row that cannot be relocated does

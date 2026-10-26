@@ -155,3 +155,89 @@ func TestRangeUpdateRollbackRestoresRowsAndIndexes(t *testing.T) {
 		t.Fatalf("ValidateIndexes after range rollback: %v", err)
 	}
 }
+
+func TestRangeMutationRejectsStaleSecondaryIndexCandidate(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "data")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DATA_DIR", dataDir)
+	tbl, err := CreateWithTypes("stale_range_candidate", []Column{
+		{Name: "age", Type: ColumnUint64},
+		{Name: "name", Type: ColumnText},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tbl.Close()
+	if err := tbl.Insert([]string{"10", "Ada"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tbl.CreateIndex("age"); err != nil {
+		t.Fatal(err)
+	}
+	rowIt := tbl.Pager.RowIterator()
+	if rowData, err := rowIt.Next(); err != nil || rowData == nil {
+		t.Fatalf("read inserted row location: data=%v err=%v", rowData, err)
+	}
+	info := rowIt.GetCurrentInfo()
+	ridPage, ridSlot := uint32(info.PageID), uint16(info.SlotID)
+	secondary := tbl.Indexes["age"]
+	if err := secondary.Insert(999, ridPage, ridSlot); err != nil {
+		t.Fatal(err)
+	}
+	point := uint64(999)
+	err = tbl.UpdateRange(Uint64Range{ColIdx: 1, Lower: &point, LowerInclusive: true, Upper: &point, UpperInclusive: true}, nil,
+		[]UpdateValue{{ColIdx: 2, Value: "Grace"}})
+	if err == nil {
+		t.Fatal("UpdateRange succeeded with a stale range index entry")
+	}
+	// mutate refreshes the table's index handles after rollback.
+	if err := tbl.Indexes["age"].Delete(999); err != nil {
+		t.Fatalf("remove injected stale index entry: %v", err)
+	}
+	rows, err := tbl.Select([]string{"name"}, []ColEq{{ColIdx: 1, Value: "10"}})
+	if err != nil || len(rows) != 2 || rows[1][0] != "Ada" {
+		t.Fatalf("row after rejected stale candidate = %q, %v; want Ada", rows, err)
+	}
+	if err := tbl.ValidateIndexes(); err != nil {
+		t.Fatalf("ValidateIndexes after stale candidate cleanup: %v", err)
+	}
+}
+
+func TestRangeMutationsFallBackToTableScan(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "data")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DATA_DIR", dataDir)
+	tbl, err := CreateWithTypes("range_mutation_scan", []Column{
+		{Name: "age", Type: ColumnUint64},
+		{Name: "name", Type: ColumnText},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tbl.Close()
+	for _, row := range [][]string{{"10", "A"}, {"20", "B"}, {"30", "C"}} {
+		if err := tbl.Insert(row); err != nil {
+			t.Fatal(err)
+		}
+	}
+	lower, upper := uint64(10), uint64(20)
+	if err := tbl.UpdateRange(Uint64Range{ColIdx: 1, Lower: &lower, LowerInclusive: true, Upper: &upper, UpperInclusive: true}, nil,
+		[]UpdateValue{{ColIdx: 2, Value: "updated"}}); err != nil {
+		t.Fatalf("UpdateRange without secondary index: %v", err)
+	}
+	deleteLower := uint64(30)
+	if err := tbl.DeleteRange(Uint64Range{ColIdx: 1, Lower: &deleteLower, LowerInclusive: true}, nil); err != nil {
+		t.Fatalf("DeleteRange without secondary index: %v", err)
+	}
+	rows, err := tbl.Select([]string{"age", "name"}, nil)
+	if err != nil || len(rows) != 3 || rows[1][1] != "updated" || rows[2][1] != "updated" {
+		t.Fatalf("rows after scan mutations = %q, %v; want two updated rows", rows, err)
+	}
+	if err := tbl.ValidateIndexes(); err != nil {
+		t.Fatalf("ValidateIndexes after scan mutations: %v", err)
+	}
+}
